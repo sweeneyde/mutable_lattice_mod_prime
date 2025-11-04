@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[tool.cibuildwheel]
+test-command = "python -m mutable_lattice_mod_prime.test -v"
+
+[project]
+name = "mutable_lattice_mod_prime"
+version = "0.0.0"
+authors = [
+  { name="Dennis Sweeney", email="sweeney.427@osu.edu" },
+]
+description = "linear algebra over Z/pZ"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/sweeneyde/mutable_lattice_mod_prime"
+"Bug Tracker" = "https://github.com/sweeneyde/mutable_lattice_mod_prime"
