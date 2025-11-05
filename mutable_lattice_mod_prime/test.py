@@ -1,7 +1,8 @@
 import unittest
 
 from . import (
-    is_prime_u8, is_prime_u32, inverse_u32, SMALL_PRIMES, Prime_u8
+    is_prime_u8, is_prime_u32, inverse_u32, SMALL_PRIMES,
+    Prime_u8, Prime_u32,
 )
 
 from .pylattice import LatticeModPrime as PyLatticeModPrime
@@ -81,6 +82,12 @@ class Test_Prime_u8(unittest.TestCase):
         Prime_u8(3)
         Prime_u8(251)
 
+    def test_prime_u8_round_trip(self):
+        for p in [2, 3, 251]:
+            self.assertEqual(Prime_u8(p).p, p)
+            self.assertEqual(repr(Prime_u8(p)), f"Prime_u8({p})")
+            self.assertEqual(str(Prime_u8(p)), f"Prime_u8({p})")
+
     def test_prime_u8_error(self):
         with self.assertRaises(OverflowError): Prime_u8(-1)
         with self.assertRaises(OverflowError): Prime_u8(256)
@@ -99,6 +106,43 @@ class Test_Prime_u8(unittest.TestCase):
         self.assertEqual(list(map(Prime_u8(11).inverse, range(11))), [None, 1, 6, 4, 3, 9, 2, 8, 7, 5, 10])
         self.assertEqual(list(map(Prime_u8(251).inverse, range(251))),
                          [None] + [pow(x, -1, 251) for x in range(1, 251)])
+
+class Test_Prime_u32(unittest.TestCase):
+    def test_prime_u32_creation(self):
+        Prime_u32(2)
+        Prime_u32(3)
+        Prime_u32(251)
+        Prime_u32(7919)
+        Prime_u32(4294967291)
+
+    def test_prime_u32_round_trip(self):
+        for p in [2, 3, 251, 7919, 4294967291]:
+            self.assertEqual(Prime_u32(p).p, p)
+            self.assertEqual(repr(Prime_u32(p)), f"Prime_u32({p})")
+            self.assertEqual(str(Prime_u32(p)), f"Prime_u32({p})")
+
+    def test_prime_u32_error(self):
+        with self.assertRaises(OverflowError): Prime_u32(-1)
+        with self.assertRaises(OverflowError): Prime_u32(2**32)
+        with self.assertRaises(OverflowError): Prime_u32(2**64)
+        with self.assertRaises(OverflowError): Prime_u32(2**100)
+        with self.assertRaisesRegex(ValueError, "not prime"): Prime_u32(0)
+        with self.assertRaisesRegex(ValueError, "not prime"): Prime_u32(1)
+        with self.assertRaisesRegex(ValueError, "not prime"): Prime_u32(4)
+        with self.assertRaisesRegex(ValueError, "not prime"): Prime_u32(255)
+        with self.assertRaisesRegex(ValueError, "not prime"): Prime_u32(2**32 - 3)
+
+    def test_inverses(self):
+        self.assertEqual(list(map(Prime_u32(2).inverse, range(2))), [None, 1])
+        self.assertEqual(list(map(Prime_u32(3).inverse, range(3))), [None, 1, 2])
+        self.assertEqual(list(map(Prime_u32(5).inverse, range(5))), [None, 1, 3, 2, 4])
+        self.assertEqual(list(map(Prime_u32(7).inverse, range(7))), [None, 1, 4, 5, 2, 3, 6])
+        self.assertEqual(list(map(Prime_u32(11).inverse, range(11))), [None, 1, 6, 4, 3, 9, 2, 8, 7, 5, 10])
+        self.assertEqual(list(map(Prime_u32(251).inverse, range(251))),
+                         [None] + [pow(x, -1, 251) for x in range(1, 251)])
+        p = 4294967291
+        self.assertEqual(Prime_u32(p).inverse(1234), pow(1234, -1, p))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -298,10 +298,98 @@ static PyTypeObject Prime_u8_Type = {
 /* Prime_u32                                                         */
 /*********************************************************************/
 
+static PyTypeObject Prime_u32_Type;
+
 typedef struct {
     PyObject_HEAD
     uint32_t p;
 } Prime_u32;
+
+static Prime_u32 *
+Prime_u32_new_impl(uint32_t p)
+{
+    if (!is_prime_u32(p)) {
+        PyErr_SetString(PyExc_ValueError, "not prime");
+        return NULL;
+    }
+    Prime_u32 *self = (Prime_u32 *)PyType_GenericAlloc(&Prime_u32_Type, 0);
+    if (self == NULL) {
+        return NULL;
+    }
+    self->p = p;
+    return self;
+}
+
+static PyObject *
+Prime_u32_new(PyTypeObject *Py_UNUSED(type), PyObject *args, PyObject *kwds)
+{
+    if (kwds != NULL && PyDict_GET_SIZE(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError, "Prime_u32() takes no keyword arguments.");
+        return NULL;
+    }
+    if (PyTuple_GET_SIZE(args) != 1) {
+        PyErr_SetString(PyExc_TypeError, "Prime_u32() takes exactly one argument.");
+        return NULL;
+    }
+    PyObject *p_obj = PyTuple_GET_ITEM(args, 0);
+    long long p = PyLong_AsLongLong(p_obj);
+    if (p == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (p < 0 || p > UINT32_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "exceeds 8 bits");
+        return NULL;
+    }
+    return (PyObject *)Prime_u32_new_impl((uint32_t)p);
+}
+
+static PyObject *
+Prime_u32_inverse(PyObject *self, PyObject *other)
+{
+    assert(Py_TYPE(self) == &Prime_u32_Type);
+    uint32_t p = ((Prime_u32 *)self)->p;
+    long long x = PyLong_AsLongLong(other);
+    if (x == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (x < 0 || x >= p) {
+        PyErr_SetString(PyExc_OverflowError, "argument exceeds the modulus");
+        return NULL;
+    }
+    if (x == 0) {
+        Py_RETURN_NONE;
+    }
+    return PyLong_FromLong(inverse_u32((uint32_t)x, p));
+}
+
+static PyObject *
+Prime_u32_repr(PyObject *self)
+{
+    return PyUnicode_FromFormat("Prime_u32(%llu)", (long long)((Prime_u32 *)self)->p);
+}
+
+static PyMethodDef Prime_u32_methods[] = {
+    {"inverse", Prime_u32_inverse, METH_O, "Prime(p).inverse(a) gets the multiplicative inverse of a modulo p"},
+    {NULL, NULL, 0, NULL}
+};
+
+static PyMemberDef Prime_u32_members[] = {
+    {"p", Py_T_UINT, offsetof(Prime_u32, p), Py_READONLY, ""},
+    {NULL}
+};
+
+static PyTypeObject Prime_u32_Type = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "mutable_lattice.Prime_u32",
+    .tp_doc = PyDoc_STR("a 32-bit prime and associated data"),
+    .tp_basicsize = sizeof(Prime_u32),
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_new = Prime_u32_new,
+    .tp_methods = Prime_u32_methods,
+    .tp_members = Prime_u32_members,
+    .tp_str = Prime_u32_repr,
+    .tp_repr = Prime_u32_repr,
+};
 
 
 /*********************************************************************/
@@ -312,7 +400,7 @@ typedef struct {
     PyObject_VAR_HEAD
     uint8_t p;
     uint8_t data[1];
-} Vector_u8;
+} VectorModPrime_u8;
 
 
 /*********************************************************************/
@@ -323,7 +411,7 @@ typedef struct {
     PyObject_VAR_HEAD
     uint32_t p;
     uint32_t data[1];
-} Vector_u32;
+} VectorModPrime_u32;
 
 /*********************************************************************/
 /* Lattice_u8                                                        */
@@ -369,6 +457,12 @@ mutable_lattice_module_exec(PyObject *m)
         return -1;
     }
     if (PyModule_AddObjectRef(m, "Prime_u8", (PyObject *)&Prime_u8_Type) < 0) {
+        return -1;
+    }
+    if (PyType_Ready(&Prime_u32_Type) < 0) {
+        return -1;
+    }
+    if (PyModule_AddObjectRef(m, "Prime_u32", (PyObject *)&Prime_u32_Type) < 0) {
         return -1;
     }
     return 0;

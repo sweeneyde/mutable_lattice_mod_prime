@@ -1,5 +1,6 @@
 from _mutable_lattice_mod_prime import (
-    is_prime_u8, is_prime_u32, inverse_u32, Prime_u8
+    is_prime_u8, is_prime_u32, inverse_u32,
+    Prime_u8, Prime_u32,
 )
 
 SMALL_PRIMES = (
