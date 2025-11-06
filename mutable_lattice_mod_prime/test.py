@@ -249,5 +249,81 @@ class Test_VectorModPrime_u8(unittest.TestCase):
         self.assertEqual(v.shuffled_by_action(array(WORD, [2, 2, 2, 2, 2])),
                          pp.Vector([0, 0, 100 % 97, 0, 0]))
 
+class Test_Lattice_u8(unittest.TestCase):
+    def test_creation(self):
+        pp = Prime_u8(7)
+        pp.Lattice(3)
+        pp.Lattice(3, [])
+        pp.Lattice(3, [[2, 1, 1]])
+
+    def test_tolist(self):
+        pp = Prime_u8(7)
+        self.assertEqual(pp.Lattice(3).tolist(), [])
+        self.assertEqual(pp.Lattice(3, []).tolist(), [])
+        self.assertEqual(pp.Lattice(3, [[2, 1, 1]]).tolist(), [[1, 4, 4]])
+
+    def test_get_basis(self):
+        pp = Prime_u8(7)
+        self.assertEqual(pp.Lattice(3).get_basis(), [])
+        self.assertEqual(pp.Lattice(3, []).get_basis(), [])
+        self.assertEqual(pp.Lattice(3, [[2, 1, 1]]).get_basis(), [pp.Vector([1, 4, 4])])
+
+    def test_row_echelon_1(self):
+        pp = Prime_u8(7)
+        self.assertEqual(pp.Lattice(3, [[2, 2, 2], [3, 3, 3], [4, 4, 4]]).tolist(), [[1, 1, 1]])
+        self.assertEqual(pp.Lattice(3, [[2, 2, 2], [0, 3, 3], [0, 0, 4]]).tolist(), [[1, 1, 1], [0, 1, 1], [0, 0, 1]])
+        self.assertEqual(pp.Lattice(3, [[1, 0, 1], [2, 0, 3]]).tolist(), [[1, 0, 1], [0, 0, 1]])
+        self.assertEqual(pp.Lattice(3, [[2, 0, 3], [1, 0, 1]]).tolist(), [[1, 0, 5], [0, 0, 1]])
+
+    def test_row_echelon_2(self):
+        pp = Prime_u8(3)
+        self.assertEqual(pp.Lattice(0, [[], [], []]).tolist(), [])
+        self.assertEqual(pp.Lattice(1, []).tolist(), [])
+        self.assertEqual(pp.Lattice(1, [[0]]).tolist(), [])
+        self.assertEqual(pp.Lattice(1, [[1]]).tolist(), [[1]])
+        self.assertEqual(pp.Lattice(1, [[2]]).tolist(), [[1]])
+        self.assertEqual(pp.Lattice(1, [[2], [1]]).tolist(), [[1]])
+        self.assertEqual(pp.Lattice(2, []).tolist(), [])
+        self.assertEqual(pp.Lattice(2, [[0, 0]]).tolist(), [])
+        self.assertEqual(pp.Lattice(2, [[1, 0]]).tolist(), [[1, 0]])
+        self.assertEqual(pp.Lattice(2, [[2, 0]]).tolist(), [[1, 0]])
+        self.assertEqual(pp.Lattice(2, [[1, 1]]).tolist(), [[1, 1]])
+        self.assertEqual(pp.Lattice(2, [[2, 2]]).tolist(), [[1, 1]])
+        self.assertEqual(pp.Lattice(2, [[2, 1]]).tolist(), [[1, 2]])
+        self.assertEqual(pp.Lattice(2, [[0, 0], [2, 0]]).tolist(), [[1, 0]])
+        self.assertEqual(pp.Lattice(2, [[1, 2], [2, 1]]).tolist(), [[1, 2]])
+        self.assertEqual(pp.Lattice(2, [[1, 1], [2, 0]]).tolist(), [[1, 1], [0, 1]])
+        self.assertEqual(pp.Lattice(2, [[0, 2], [2, 2]]).tolist(), [[1, 1], [0, 1]])
+
+    def test_contains(self):
+        pp = Prime_u8(3)
+        L = pp.Lattice(6, [[1, 1, 0, 0, 2, 2]])
+        self.assertIn(pp.Vector([2, 2, 0, 0, 1, 1]), L)
+        self.assertIn(pp.Vector([1, 1, 0, 0, 2, 2]), L)
+        self.assertIn(pp.Vector([0, 0, 0, 0, 0, 0]), L)
+        self.assertNotIn(pp.Vector([0, 0, 1, 0, 0, 0]), L)
+        self.assertNotIn(pp.Vector([1, 1, 0, 0, 1, 1]), L)
+        self.assertNotIn(pp.Vector([0, 0, 1, 0, 0, 0]), L)
+        self.assertNotIn(pp.Vector([1, 1, 0, 0, 0, 0]), L)
+        L = pp.Lattice(6, [[1, 1, 0, 0, 2, 2], [0, 0, 1, 1, 1, 1]])
+        self.assertIn(pp.Vector([0, 0, 0, 0, 0, 0]), L)
+        self.assertIn(pp.Vector([1, 1, 0, 0, 2, 2]), L)
+        self.assertIn(pp.Vector([2, 2, 0, 0, 1, 1]), L)
+        self.assertIn(pp.Vector([0, 0, 1, 1, 1, 1]), L)
+        self.assertIn(pp.Vector([1, 1, 1, 1, 0, 0]), L)
+        self.assertIn(pp.Vector([2, 2, 1, 1, 2, 2]), L)
+        self.assertIn(pp.Vector([0, 0, 2, 2, 2, 2]), L)
+        self.assertIn(pp.Vector([1, 1, 2, 2, 1, 1]), L)
+        self.assertIn(pp.Vector([2, 2, 2, 2, 0, 0]), L)
+        self.assertNotIn(pp.Vector([1, 1, 1, 1, 1, 1]), L)
+        self.assertNotIn(pp.Vector([2, 2, 1, 1, 0, 0]), L)
+        self.assertNotIn(pp.Vector([0, 0, 1, 1, 2, 2]), L)
+        self.assertNotIn(pp.Vector([1, 1, 2, 2, 2, 2]), L)
+        self.assertNotIn(pp.Vector([2, 2, 2, 2, 1, 1]), L)
+        self.assertNotIn(pp.Vector([0, 0, 2, 2, 0, 0]), L)
+        self.assertNotIn(pp.Vector([1, 1, 0, 0, 0, 0]), L)
+        self.assertNotIn(pp.Vector([2, 2, 0, 0, 2, 2]), L)
+        self.assertNotIn(pp.Vector([0, 0, 0, 0, 1, 1]), L)
+
 if __name__ == "__main__":
     unittest.main()

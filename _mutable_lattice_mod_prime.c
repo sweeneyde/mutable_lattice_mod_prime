@@ -311,12 +311,14 @@ Prime_u8_repr(PyObject *self)
     return PyUnicode_FromFormat("Prime_u8(%lu)", (long)((Prime_u8 *)self)->p);
 }
 
-static PyObject *
-Prime_u8_Vector(PyObject *self, PyObject *arg);
+static PyObject *Prime_u8_Vector(PyObject *self, PyObject *arg);
+static PyObject *Prime_u8_Lattice(PyObject *prime_u8, PyObject *args, PyObject *kwargs);
 
 static PyMethodDef Prime_u8_methods[] = {
     {"inverse", Prime_u8_inverse, METH_O, "Prime(p).inverse(a) gets the multiplicative inverse of a modulo p"},
     {"Vector", Prime_u8_Vector, METH_O, "Prime(p).Vector([x0, ..., xn]) creates a Vector of Z/pZ values"},
+    {"Lattice", (PyCFunction)(void(*)(void))Prime_u8_Lattice, METH_VARARGS | METH_KEYWORDS,
+        "Prime(p).Lattice(N, vectors, maxrank=-1) creates as space of vectors over Z/pZ"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -337,104 +339,6 @@ static PyTypeObject Prime_u8_Type = {
     .tp_members = Prime_u8_members,
     .tp_str = Prime_u8_repr,
     .tp_repr = Prime_u8_repr,
-};
-
-/*********************************************************************/
-/* Prime_u32                                                         */
-/*********************************************************************/
-
-static PyTypeObject Prime_u32_Type;
-
-typedef struct {
-    PyObject_HEAD
-    uint32_t p;
-} Prime_u32;
-
-static Prime_u32 *
-Prime_u32_new_impl(uint32_t p)
-{
-    if (!is_prime_u32(p)) {
-        PyErr_SetString(PyExc_ValueError, "not prime");
-        return NULL;
-    }
-    Prime_u32 *self = (Prime_u32 *)PyType_GenericAlloc(&Prime_u32_Type, 0);
-    if (self == NULL) {
-        return NULL;
-    }
-    self->p = p;
-    return self;
-}
-
-static PyObject *
-Prime_u32_new(PyTypeObject *Py_UNUSED(type), PyObject *args, PyObject *kwds)
-{
-    if (kwds != NULL && PyDict_GET_SIZE(kwds) > 0) {
-        PyErr_SetString(PyExc_TypeError, "Prime_u32() takes no keyword arguments.");
-        return NULL;
-    }
-    if (PyTuple_GET_SIZE(args) != 1) {
-        PyErr_SetString(PyExc_TypeError, "Prime_u32() takes exactly one argument.");
-        return NULL;
-    }
-    PyObject *p_obj = PyTuple_GET_ITEM(args, 0);
-    long long p = PyLong_AsLongLong(p_obj);
-    if (p == -1 && PyErr_Occurred()) {
-        return NULL;
-    }
-    if (p < 0 || p > UINT32_MAX) {
-        PyErr_SetString(PyExc_OverflowError, "exceeds 8 bits");
-        return NULL;
-    }
-    return (PyObject *)Prime_u32_new_impl((uint32_t)p);
-}
-
-static PyObject *
-Prime_u32_inverse(PyObject *self, PyObject *other)
-{
-    assert(Py_TYPE(self) == &Prime_u32_Type);
-    uint32_t p = ((Prime_u32 *)self)->p;
-    long long x = PyLong_AsLongLong(other);
-    if (x == -1 && PyErr_Occurred()) {
-        return NULL;
-    }
-    if (x < 0 || x >= p) {
-        PyErr_SetString(PyExc_OverflowError, "argument exceeds the modulus");
-        return NULL;
-    }
-    if (x == 0) {
-        Py_RETURN_NONE;
-    }
-    return PyLong_FromLong(inverse_u32((uint32_t)x, p));
-}
-
-static PyObject *
-Prime_u32_repr(PyObject *self)
-{
-    return PyUnicode_FromFormat("Prime_u32(%llu)", (long long)((Prime_u32 *)self)->p);
-}
-
-static PyMethodDef Prime_u32_methods[] = {
-    {"inverse", Prime_u32_inverse, METH_O, "Prime(p).inverse(a) gets the multiplicative inverse of a modulo p"},
-    {NULL, NULL, 0, NULL}
-};
-
-static_assert(sizeof(unsigned int) == sizeof(uint32_t));
-static PyMemberDef Prime_u32_members[] = {
-    {"p", Py_T_UINT, offsetof(Prime_u32, p), Py_READONLY, ""},
-    {NULL}
-};
-
-static PyTypeObject Prime_u32_Type = {
-    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "Prime_u32",
-    .tp_doc = PyDoc_STR("a 32-bit prime and associated data"),
-    .tp_basicsize = sizeof(Prime_u32),
-    .tp_flags = Py_TPFLAGS_DEFAULT,
-    .tp_new = Prime_u32_new,
-    .tp_methods = Prime_u32_methods,
-    .tp_members = Prime_u32_members,
-    .tp_str = Prime_u32_repr,
-    .tp_repr = Prime_u32_repr,
 };
 
 /*********************************************************************/
@@ -528,14 +432,15 @@ Prime_u8_Vector(PyObject *self, PyObject *arg)
 }
 
 static PyObject *
-VectorModPrime_u8_tolist(PyObject *self, PyObject *Py_UNUSED(other))
+VectorModPrime_u8_tolist_impl(uint8_t *data, Py_ssize_t N)
 {
-    assert(Py_TYPE(self) == &VectorModPrime_u8_Type);
-    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
-    Py_ssize_t N = Py_SIZE(vec);
     PyObject *result = PyList_New(N);
+    if (result == NULL) {
+        return NULL;
+    }
+    static_assert(sizeof(uint8_t) < sizeof(long));
     for (Py_ssize_t j = 0; j < N; j++) {
-        PyObject *x = PyLong_FromLong(vec->data[j]);
+        PyObject *x = PyLong_FromLong(data[j]);
         if (x == NULL) {
             Py_DECREF(result);
             return NULL;
@@ -543,6 +448,14 @@ VectorModPrime_u8_tolist(PyObject *self, PyObject *Py_UNUSED(other))
         PyList_SET_ITEM(result, j, x);
     }
     return result;
+}
+
+static PyObject *
+VectorModPrime_u8_tolist(PyObject *self, PyObject *Py_UNUSED(other))
+{
+    assert(Py_TYPE(self) == &VectorModPrime_u8_Type);
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
+    return VectorModPrime_u8_tolist_impl(vec->data, Py_SIZE(vec));
 }
 
 static PyObject *
@@ -945,22 +858,13 @@ static PyTypeObject VectorModPrime_u8_Type = {
 };
 
 /*********************************************************************/
-/* Vector_u32                                                        */
-/*********************************************************************/
-
-typedef struct {
-    PyObject_VAR_HEAD
-    uint32_t p;
-    uint32_t data[1];
-} VectorModPrime_u32;
-
-/*********************************************************************/
 /* Lattice_u8                                                        */
 /*********************************************************************/
 
+static PyTypeObject Lattice_u8_Type;
+
 typedef struct {
     PyObject_VAR_HEAD
-    uint8_t p; // The prime number
     Prime_u8 *prime_u8; // The data associated to p (the table of inverses)
     Py_ssize_t N; // The ambient dimension; we're a sublattice of Z^N
     Py_ssize_t rank; // The number of basis vectors
@@ -981,6 +885,501 @@ typedef struct {
     // and could recalculate, but I don't think we'll be starved
     // by this constant space overhead.
 } Lattice_u8;
+
+static uint8_t *
+Lattice_u8_push_vector(Lattice_u8 *L, uint8_t *vec)
+{
+    Py_ssize_t N = L->N;
+    assert(L->rank <= L->maxrank);
+    uint8_t *data = L->data + N * L->rank;
+    memcpy(data, vec, L->N * sizeof(uint8_t));
+    return data;
+}
+
+static void
+Lattice_u8_dealloc(PyObject *self)
+{
+    Py_CLEAR(((Lattice_u8 *)self)->prime_u8);
+    Py_TYPE(self)->tp_free(self);
+}
+
+static PyObject *
+Lattice_u8_new_impl(Prime_u8 *prime_u8, Py_ssize_t N, Py_ssize_t maxrank)
+{
+    if (N < 0) {
+        PyErr_SetString(PyExc_ValueError, "Lattice(N) argument must be nonnegative");
+        return NULL;
+    }
+    if (maxrank < -1) {
+        PyErr_SetString(PyExc_ValueError, "maxrank must be >= -1");
+        return NULL;
+    }
+    if (maxrank == -1 || maxrank > N) {
+        maxrank = N;
+    }
+    // We need:
+    //   3*N words for the Py_ssize_t data
+    // + N words for the basis
+    // + N*(maxrank + 1) bytes for the buffers
+    // == 4*N*sizeof(Py_ssize_t) + N*(maxrank + 1)*sizeof(uint8_t)
+    // == N*(4*sizeof(Py_ssize_t) + (maxrank + 1)*sizeof(uint8_t))
+    Py_ssize_t bytes_per_row = 4*sizeof(Py_ssize_t) + (maxrank + 1)*sizeof(uint8_t);
+    if (bytes_per_row <= 0 || N > PY_SSIZE_T_MAX/bytes_per_row) {
+        PyErr_SetString(PyExc_OverflowError, "Lattice was too big to construct");
+        return NULL;
+    }
+    Lattice_u8 *L = (Lattice_u8 *)PyType_GenericAlloc(&Lattice_u8_Type, N*bytes_per_row);
+    if (!L) {
+        return NULL;
+    }
+    void **buffer = (void **)L->basis;
+    Py_ssize_t *zero_columns = (Py_ssize_t *)&buffer[N];
+    Py_ssize_t *col_to_pivot = (Py_ssize_t *)&buffer[2*N];
+    Py_ssize_t *row_to_pivot = (Py_ssize_t *)&buffer[3*N];
+    uint8_t *data = (uint8_t *)&buffer[4*N];
+    assert(data[N*(maxrank+1)-1] == 0);
+    L->N = N;
+    L->maxrank = maxrank;
+    L->rank = 0;
+    L->num_zero_columns = N;
+    L->zero_columns = zero_columns;
+    for (Py_ssize_t j = 0; j < N; j++) {
+        zero_columns[j] = j;
+        col_to_pivot[j] = -1;
+    }
+    L->row_to_pivot = row_to_pivot;
+    L->col_to_pivot = col_to_pivot;
+    L->data = data;
+    L->prime_u8 = prime_u8;
+    Py_INCREF(prime_u8);
+    return (PyObject *)L;
+}
+
+static bool
+Lattice_add_vector_or_list_impl(PyObject *self, PyObject *other);
+
+static PyObject *
+Prime_u8_Lattice(PyObject *prime_u8, PyObject *args, PyObject *kwargs)
+{
+    assert(Py_TYPE(prime_u8) == &Prime_u8_Type);
+    static char *kwlist[] = {"", "", "maxrank", NULL};
+    Py_ssize_t N;
+    PyObject *data = NULL;
+    Py_ssize_t maxrank = -1;
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "n|O$n", kwlist, &N, &data, &maxrank)) {
+        return NULL;
+    }
+    PyObject *result = Lattice_u8_new_impl((Prime_u8 *)prime_u8, N, maxrank);
+    if (result == NULL) {
+        return NULL;
+    }
+    if (data == NULL) {
+        return result;
+    }
+    if (!PyList_Check(data)) {
+        PyErr_SetString(PyExc_TypeError, "Lattice(N, data) second argument must be list");
+        Py_DECREF(result);
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(data); i++) {
+        if (Lattice_add_vector_or_list_impl(result, PyList_GET_ITEM(data, i))) {
+            Py_DECREF(result);
+            return NULL;
+        }
+    }
+    return result;
+}
+
+static PyObject *
+Lattice_u8_get_basis(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    assert(Py_TYPE(self) == &Lattice_u8_Type);
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    Py_ssize_t N = L->N;
+    Py_ssize_t R = L->rank;
+    PyObject *result = PyList_New(R);
+    if (result == NULL) {
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < R; i++) {
+        VectorModPrime_u8 *v = VectorModPrime_u8_zero_impl(L->prime_u8->p, N);
+        if (v == NULL) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        memmove(v->data, L->basis[i], N*sizeof(uint8_t));
+        PyList_SET_ITEM(result, i, v);
+    }
+    return result;
+}
+
+static PyObject *
+Lattice_u8_tolist(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    assert(Py_TYPE(self) == &Lattice_u8_Type);
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    Py_ssize_t N = L->N;
+    Py_ssize_t R = L->rank;
+    PyObject *result = PyList_New(R);
+    if (result == NULL) {
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < R; i++) {
+        PyObject *v = VectorModPrime_u8_tolist_impl(L->basis[i], N);
+        if (v == NULL) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        PyList_SET_ITEM(result, i, v);
+    }
+    return result;
+}
+
+static Py_ssize_t
+bisect_left(Py_ssize_t *a, Py_ssize_t lo, Py_ssize_t hi, Py_ssize_t x)
+{
+    while (lo < hi) {
+        // The cast ensures there's no overflow.
+        Py_ssize_t mid = ((size_t)lo + hi) / 2;
+        assert(lo <= mid && mid <= hi);
+        if (a[mid] < x) {
+            lo = mid + 1;
+        }
+        else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+static void
+Lattice_u8_insert_vector_with_pivot(Lattice_u8 *L, uint8_t *vec, Py_ssize_t j)
+{
+    assert(vec == L->data + L->N * L->rank);
+    Py_ssize_t R = L->rank;
+    Py_ssize_t *row_to_pivot = L->row_to_pivot;
+    Py_ssize_t *col_to_pivot = L->col_to_pivot;
+    uint8_t **basis = L->basis;
+    Py_ssize_t where = bisect_left(L->row_to_pivot, 0, R, j);
+    assert(0 <= where && where <= R);
+    assert(where == 0 || row_to_pivot[where - 1] < j);
+    assert(where == R || row_to_pivot[where] > j);
+    L->rank = R + 1;
+    assert(L->rank <= L->N);
+    for (Py_ssize_t i = R; i > where; i--) {
+        basis[i] = basis[i - 1];
+        row_to_pivot[i] = row_to_pivot[i - 1];
+        assert(col_to_pivot[row_to_pivot[i]] == i - 1);
+        col_to_pivot[row_to_pivot[i]] = i;
+    }
+    basis[where] = vec;
+    row_to_pivot[where] = j;
+    col_to_pivot[j] = where;
+
+    Py_ssize_t *zero_columns = L->zero_columns;
+    Py_ssize_t nzc = L->num_zero_columns;
+    Py_ssize_t dest, src;
+    dest = src = bisect_left(zero_columns, 0, nzc, j);
+    for (; src < nzc; src++) {
+        if (vec[zero_columns[src]] == 0) {
+            // keep
+            zero_columns[dest++] = zero_columns[src];
+        }
+    }
+    L->num_zero_columns = dest;
+}
+
+static bool
+Lattice_add_vector_impl(Lattice_u8 *L, uint8_t *vec)
+{
+    Py_ssize_t N = L->N;
+    if (L->rank == N) {
+        return false;
+    }
+    uint8_t p = L->prime_u8->p;
+    vec = Lattice_u8_push_vector(L, vec);
+    for (Py_ssize_t j = 0; j < N; j++) {
+        if (vec[j] == 0) {
+            continue;
+        }
+        Py_ssize_t i = L->col_to_pivot[j];
+        if (i != -1) {
+            uint8_t *row = L->basis[i];
+            assert(row[j] == 1);
+            VectorModPrime_u8_subtract_multiple_impl(&vec[j], &row[j], N - j, vec[j], p);
+            assert(vec[j] == 0);
+            continue;
+        }
+        if (L->rank == L->maxrank) {
+            PyErr_SetString(PyExc_IndexError, "Lattice rank would exceed maxrank");
+            return true;
+        }
+        // Found a place to put this vector
+        if (vec[j] != 1) {
+            assert(vec[j] != 0);
+            uint8_t inv = L->prime_u8->inv[vec[j]];
+            assert((vec[j] * inv) % p == 1);
+            VectorModPrime_u8_imul_impl(&vec[j], N - j, inv, p);
+            assert(vec[j] == 1);
+        }
+        Lattice_u8_insert_vector_with_pivot(L, vec, j);
+        return false;
+    }
+    // already present
+    return false;
+}
+
+static PyObject *
+Lattice_add_vector(PyObject *self, PyObject *other)
+{
+    assert(Py_TYPE(self) == &Lattice_u8_Type);
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    if (Py_TYPE(other) != &VectorModPrime_u8_Type) {
+        PyErr_SetString(PyExc_TypeError, "Lattice.add_vector(v) argument must be Vector");
+        return NULL;
+    }
+    if (Py_SIZE(other) != L->N) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in Lattice.add_vector");
+        return NULL;
+    }
+    if (Lattice_add_vector_impl(L, ((VectorModPrime_u8 *)other)->data)) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static bool
+Lattice_add_vector_or_list_impl(PyObject *self, PyObject *other)
+{
+    if (Py_TYPE(other) == &PyList_Type) {
+        assert(Py_TYPE(self) == &Lattice_u8_Type);
+        Lattice_u8 *L = (Lattice_u8 *)self;
+        other = Prime_u8_Vector((PyObject *)L->prime_u8, other);
+        if (other == NULL) {
+            return true;
+        }
+    }
+    else if (Py_TYPE(other) == &VectorModPrime_u8_Type) {
+        Py_INCREF(other);
+    }
+    else {
+        PyErr_SetString(PyExc_TypeError, "Lattice data entries must be list or Vector");
+        return true;
+    }
+    PyObject *res = Lattice_add_vector(self, other);
+    Py_DECREF(other);
+    if (res == NULL) {
+        return true;
+    }
+    Py_DECREF(res);
+    return false;
+}
+
+static bool
+Lattice_u8_contains_impl(Lattice_u8 *L, uint8_t *vec)
+{
+    Py_ssize_t N = L->N;
+    if (L->rank == N) {
+        return true;
+    }
+    {
+        Py_ssize_t nzc = L->num_zero_columns;
+        Py_ssize_t *zero_columns = L->zero_columns;
+        for (Py_ssize_t i = 0; i < nzc; i++) {
+            if (vec[zero_columns[i]]) {
+                return false;
+            }
+        }
+    }
+    Py_ssize_t j = 0;
+    while (j < N && vec[j] == 0) {
+        j++;
+    }
+    if (j == N) {
+        // the zero vector is always present
+        return true;
+    }
+    Py_ssize_t i = L->col_to_pivot[j];
+    if (i == -1) {
+        // no pivot here to zero out this nonzero entry
+        return false;
+    }
+    uint8_t *row = L->basis[i];
+    if (memcmp(&row[j], &vec[j], (N-j)*sizeof(uint8_t)) == 0) {
+        // no copying
+        return true;
+    }
+
+    Lattice_u8_push_vector(L, vec);
+    Py_ssize_t *col_to_pivot = L->col_to_pivot;
+    uint8_t p = L->prime_u8->p;
+    for (; j < N; j++) {
+        if (vec[j] == 0) {
+            continue;
+        }
+        Py_ssize_t i = col_to_pivot[j];
+        if (i == -1) {
+            // no pivot here to zero out this nonzero entry
+            return false;
+        }
+        uint8_t *row = L->basis[i];
+        assert(row[j] == 1);
+        VectorModPrime_u8_subtract_multiple_impl(&vec[j], &row[j], N - j, vec[j], p);
+        assert(vec[j] == 0);
+    }
+    // making it here means everything got zeroed out
+    return true;
+}
+
+static int
+Lattice_u8_contains(PyObject *self, PyObject *other)
+{
+    assert(Py_TYPE(self) == &Lattice_u8_Type);
+    if (Py_TYPE(other) != &VectorModPrime_u8_Type) {
+        PyErr_SetString(PyExc_TypeError, "Lattice.__contains__ argument must be Vector");
+        return -1;
+    }
+    Py_ssize_t N = ((Lattice_u8 *)self)->N;
+    if (Py_SIZE(other) != N) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in Lattice.__contains__");
+        return -1;
+    }
+    return Lattice_u8_contains_impl((Lattice_u8 *)self, ((VectorModPrime_u8 *)other)->data);
+
+}
+
+static PySequenceMethods Lattice_u8_as_sequence = {
+    .sq_contains = Lattice_u8_contains
+};
+
+static PyMethodDef Lattice_u32_methods[] = {
+    {"tolist", Lattice_u8_tolist, METH_NOARGS, "return a list of lists representing a basis for this space"},
+    {"get_basis", Lattice_u8_get_basis, METH_NOARGS, "return a list of basis Vectors for this space"},
+    {NULL, NULL, 0, NULL}
+};
+
+
+static PyTypeObject Lattice_u8_Type = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "Lattice_u8",
+    .tp_doc = PyDoc_STR("a space of vectors over a field Z/pZ"),
+    .tp_basicsize = sizeof(Lattice_u8) - sizeof(uint8_t *),
+    .tp_itemsize = sizeof(uint8_t),
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    .tp_dealloc = Lattice_u8_dealloc,
+    .tp_methods = Lattice_u32_methods,
+    .tp_as_sequence = &Lattice_u8_as_sequence,
+};
+
+
+/*********************************************************************/
+/* Prime_u32                                                         */
+/*********************************************************************/
+
+static PyTypeObject Prime_u32_Type;
+
+typedef struct {
+    PyObject_HEAD
+    uint32_t p;
+} Prime_u32;
+
+static Prime_u32 *
+Prime_u32_new_impl(uint32_t p)
+{
+    if (!is_prime_u32(p)) {
+        PyErr_SetString(PyExc_ValueError, "not prime");
+        return NULL;
+    }
+    Prime_u32 *self = (Prime_u32 *)PyType_GenericAlloc(&Prime_u32_Type, 0);
+    if (self == NULL) {
+        return NULL;
+    }
+    self->p = p;
+    return self;
+}
+
+static PyObject *
+Prime_u32_new(PyTypeObject *Py_UNUSED(type), PyObject *args, PyObject *kwds)
+{
+    if (kwds != NULL && PyDict_GET_SIZE(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError, "Prime_u32() takes no keyword arguments.");
+        return NULL;
+    }
+    if (PyTuple_GET_SIZE(args) != 1) {
+        PyErr_SetString(PyExc_TypeError, "Prime_u32() takes exactly one argument.");
+        return NULL;
+    }
+    PyObject *p_obj = PyTuple_GET_ITEM(args, 0);
+    long long p = PyLong_AsLongLong(p_obj);
+    if (p == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (p < 0 || p > UINT32_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "exceeds 8 bits");
+        return NULL;
+    }
+    return (PyObject *)Prime_u32_new_impl((uint32_t)p);
+}
+
+static PyObject *
+Prime_u32_inverse(PyObject *self, PyObject *other)
+{
+    assert(Py_TYPE(self) == &Prime_u32_Type);
+    uint32_t p = ((Prime_u32 *)self)->p;
+    long long x = PyLong_AsLongLong(other);
+    if (x == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (x < 0 || x >= p) {
+        PyErr_SetString(PyExc_OverflowError, "argument exceeds the modulus");
+        return NULL;
+    }
+    if (x == 0) {
+        Py_RETURN_NONE;
+    }
+    return PyLong_FromLong(inverse_u32((uint32_t)x, p));
+}
+
+static PyObject *
+Prime_u32_repr(PyObject *self)
+{
+    return PyUnicode_FromFormat("Prime_u32(%llu)", (long long)((Prime_u32 *)self)->p);
+}
+
+static PyMethodDef Prime_u32_methods[] = {
+    {"inverse", Prime_u32_inverse, METH_O, "Prime(p).inverse(a) gets the multiplicative inverse of a modulo p"},
+    {NULL, NULL, 0, NULL}
+};
+
+static_assert(sizeof(unsigned int) == sizeof(uint32_t));
+static PyMemberDef Prime_u32_members[] = {
+    {"p", Py_T_UINT, offsetof(Prime_u32, p), Py_READONLY, ""},
+    {NULL}
+};
+
+static PyTypeObject Prime_u32_Type = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "Prime_u32",
+    .tp_doc = PyDoc_STR("a 32-bit prime and associated data"),
+    .tp_basicsize = sizeof(Prime_u32),
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_new = Prime_u32_new,
+    .tp_methods = Prime_u32_methods,
+    .tp_members = Prime_u32_members,
+    .tp_str = Prime_u32_repr,
+    .tp_repr = Prime_u32_repr,
+};
+
+
+/*********************************************************************/
+/* Vector_u32                                                        */
+/*********************************************************************/
+
+typedef struct {
+    PyObject_VAR_HEAD
+    uint32_t p;
+    uint32_t data[1];
+} VectorModPrime_u32;
 
 /*********************************************************************/
 /* Lattice_u32                                                       */
@@ -1004,6 +1403,12 @@ mutable_lattice_module_exec(PyObject *m)
         return -1;
     }
     if (PyModule_AddObjectRef(m, "VectorModPrime_u8", (PyObject *)&VectorModPrime_u8_Type) < 0) {
+        return -1;
+    }
+    if (PyType_Ready(&Lattice_u8_Type) < 0) {
+        return -1;
+    }
+    if (PyModule_AddObjectRef(m, "Lattice_u8", (PyObject *)&Lattice_u8_Type) < 0) {
         return -1;
     }
     if (PyType_Ready(&Prime_u32_Type) < 0) {
