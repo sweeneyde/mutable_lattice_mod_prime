@@ -1,4 +1,9 @@
 import unittest
+from array import array
+import sys
+
+WORD = {2**31-1: 'i', 2**63-1: 'q'}[sys.maxsize]
+assert array(WORD, []).itemsize == {'i': 4, 'q': 8}[WORD]
 
 from . import (
     is_prime_u8, is_prime_u32, inverse_u32, SMALL_PRIMES,
@@ -143,6 +148,106 @@ class Test_Prime_u32(unittest.TestCase):
         p = 4294967291
         self.assertEqual(Prime_u32(p).inverse(1234), pow(1234, -1, p))
 
+class Test_VectorModPrime_u8(unittest.TestCase):
+    def test_VectorModPrime_u8_creation(self):
+        Prime_u8(2).Vector([0, 1, 1])
+
+    def test_VectorModPrime_u8_round_trip(self):
+        v = Prime_u8(5).Vector([4, 3, 2, 1, 0])
+        self.assertEqual(v.tolist(), [4, 3, 2, 1, 0])
+        self.assertEqual(v.p, 5)
+
+    def test_VectorModPrime_u8_add(self):
+        pp = Prime_u8(7)
+        self.assertEqual(pp.Vector([0, 1, 2, 3, 4, 5, 6]) + pp.Vector([2, 4, 6, 1, 3, 5, 0]),
+                         pp.Vector([2, 5, 1, 4, 0, 3, 6]))
+        self.assertEqual(pp.Vector([]), pp.Vector([]), pp.Vector([]))
+        pp = Prime_u8(251)
+        self.assertEqual(pp.Vector([100, 200]) + pp.Vector([100, 200]), pp.Vector([200, 149]))
+
+    def test_VectorModPrime_u8_subtract(self):
+        pp = Prime_u8(7)
+        self.assertEqual(pp.Vector([0, 1, 2, 3, 4, 5, 6]) - pp.Vector([2, 4, 6, 1, 3, 5, 0]),
+                         pp.Vector([5, 4, 3, 2, 1, 0, 6]))
+        self.assertEqual(pp.Vector([]), pp.Vector([]), pp.Vector([]))
+        pp = Prime_u8(251)
+        self.assertEqual(pp.Vector([1, 2, 3]) - pp.Vector([0, 100, 200]), pp.Vector([1, 153, 54]))
+
+    def test_VectorModPrime_u8_inplace_add(self):
+        pp = Prime_u8(7)
+        v = pp.Vector([0, 1, 2, 3, 4, 5, 6])
+        v0 = v
+        v += pp.Vector([4, 4, 4, 4, 4, 4, 4])
+        self.assertEqual(v, pp.Vector([4, 5, 6, 0, 1, 2, 3]))
+        self.assertIs(v, v0)
+
+    def test_VectorModPrime_u8_inplace_subtract(self):
+        pp = Prime_u8(7)
+        v = pp.Vector([4, 4, 4, 4, 4, 4, 4])
+        v0 = v
+        v -= pp.Vector([0, 1, 2, 3, 4, 5, 6])
+        self.assertEqual(v, pp.Vector([4, 3, 2, 1, 0, 6, 5]))
+        self.assertIs(v, v0)
+
+    def test_VectorModPrime_u8_mul(self):
+        pp = Prime_u8(251)
+        v = pp.Vector([0, 20, 40, 60, 80, 100])
+        self.assertEqual(v * 3, pp.Vector([0, 60, 120, 180, 240, 49]))
+        self.assertEqual(3 * v, pp.Vector([0, 60, 120, 180, 240, 49]))
+        self.assertEqual(v * (251*10**100 + 3), pp.Vector([0, 60, 120, 180, 240, 49]))
+
+    def test_VectorModPrime_u8_imul(self):
+        pp = Prime_u8(251)
+        v = pp.Vector([0, 20, 40, 60, 80, 100])
+        v0 = v
+        v *= 3
+        self.assertEqual(v, pp.Vector([0, 60, 120, 180, 240, 49]))
+        self.assertIs(v, v0)
+
+    def test_VectorModPrime_u8_negative(self):
+        pp = Prime_u8(251)
+        self.assertEqual(-pp.Vector([0, 1, 2, 3, 248, 249, 250]), pp.Vector([0, 250, 249, 248, 3, 2, 1]))
+
+    def test_VectorModPrime_u8_subtract_multiple(self):
+        pp = Prime_u8(251)
+        v = pp.Vector([0, 10, 20, 30])
+        v.subtract_multiple(5, pp.Vector([1, 2, 3, 4]))
+        self.assertEqual(v, pp.Vector([246, 0, 5, 10]))
+
+    def test_VectorModPrime_u8_repr(self):
+        self.assertEqual(
+            repr(Prime_u8(251).Vector([0, 1, 2])),
+            "Prime_u8(251).Vector([0, 1, 2])"
+        )
+
+    def test_VectorModPrime_u8_str(self):
+        self.assertEqual(str(Prime_u8(251).Vector([])), "[]")
+        self.assertEqual(
+            str(Prime_u8(7).Vector([1, 2, 3, 4, 5, 6])),
+            "[1 2 3 4 5 6]"
+        )
+        self.assertEqual(
+            str(Prime_u8(19).Vector([1, 2, 3, 10, 11, 12])),
+            "[ 1  2  3 10 11 12]"
+        )
+        self.assertEqual(
+            str(Prime_u8(251).Vector([123, 45, 6, 78, 9])),
+            "[123  45   6  78   9]"
+        )
+
+    def test_shuffled_by_action(self):
+        pp = Prime_u8(97)
+        v = pp.Vector([0, 10, 20, 30, 40])
+        self.assertEqual(v.shuffled_by_action(array(WORD, [4, 3, 2, 1, 0])),
+                         pp.Vector([40, 30, 20, 10, 0]))
+        self.assertEqual(v.shuffled_by_action(array(WORD, [4, 3, 2, 1, 0]), 5),
+                         pp.Vector([40, 30, 20, 10, 0]))
+        self.assertEqual(v.shuffled_by_action(array(WORD, [0, 1, 0, 1, 0])),
+                         pp.Vector([60, 40, 0, 0, 0]))
+        self.assertEqual(v.shuffled_by_action(array(WORD, [0, 1, 0, 1, 0]), 2),
+                         pp.Vector([60, 40]))
+        self.assertEqual(v.shuffled_by_action(array(WORD, [2, 2, 2, 2, 2])),
+                         pp.Vector([0, 0, 100 % 97, 0, 0]))
 
 if __name__ == "__main__":
     unittest.main()

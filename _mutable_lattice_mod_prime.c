@@ -40,10 +40,51 @@ mulmod_u32(uint32_t a, uint32_t b, uint32_t mod)
     return ((uint64_t)a * (uint64_t)b) % (uint64_t)mod;
 }
 
+static inline uint32_t
+addmod_u32(uint32_t a, uint32_t b, uint32_t mod)
+{
+    return ((uint64_t)a + (uint64_t)b) % (uint64_t)mod;
+}
+
+static inline uint32_t
+submod_u32(uint32_t a, uint32_t b, uint32_t mod)
+{
+    assert(b < mod);
+    return submod_u32(a, mod-b, mod);
+}
+
+static_assert(sizeof(int) >= 2*sizeof(uint8_t));
+
 static inline uint8_t
 mulmod_u8(uint8_t a, uint8_t b, uint8_t mod)
 {
     return (uint8_t) (((int)a * (int)b) % (int)mod);
+}
+
+static inline uint8_t
+addmod_u8(uint8_t a, uint8_t b, uint8_t mod)
+{
+    return (uint8_t) (((int)a + (int)b) % (int)mod);
+}
+
+static inline uint8_t
+submod_u8(uint8_t a, uint8_t b, uint8_t mod)
+{
+    assert(b < mod);
+    return (uint8_t) (((int)a + (int)(mod-b)) % (int)mod);
+}
+
+static inline uint8_t
+subtract_multiple_u8(uint8_t a, uint8_t scalar, uint8_t b, uint8_t mod)
+{
+    assert(b < mod);
+    return (uint8_t) (((int)a + (int)scalar * (int)(mod-b)) % (int)mod);
+}
+
+static inline uint8_t
+negmod_u8(uint8_t a, uint8_t mod)
+{
+    return a == 0 ? 0 : mod - a;
 }
 
 static uint32_t
@@ -270,8 +311,12 @@ Prime_u8_repr(PyObject *self)
     return PyUnicode_FromFormat("Prime_u8(%lu)", (long)((Prime_u8 *)self)->p);
 }
 
+static PyObject *
+Prime_u8_Vector(PyObject *self, PyObject *arg);
+
 static PyMethodDef Prime_u8_methods[] = {
     {"inverse", Prime_u8_inverse, METH_O, "Prime(p).inverse(a) gets the multiplicative inverse of a modulo p"},
+    {"Vector", Prime_u8_Vector, METH_O, "Prime(p).Vector([x0, ..., xn]) creates a Vector of Z/pZ values"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -282,7 +327,7 @@ static PyMemberDef Prime_u8_members[] = {
 
 static PyTypeObject Prime_u8_Type = {
     .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "mutable_lattice.Prime_u8",
+    .tp_name = "Prime_u8",
     .tp_doc = PyDoc_STR("an 8-bit prime and associated data"),
     .tp_basicsize = sizeof(Prime_u8) - sizeof(uint8_t),
     .tp_itemsize = sizeof(uint8_t),
@@ -373,6 +418,7 @@ static PyMethodDef Prime_u32_methods[] = {
     {NULL, NULL, 0, NULL}
 };
 
+static_assert(sizeof(unsigned int) == sizeof(uint32_t));
 static PyMemberDef Prime_u32_members[] = {
     {"p", Py_T_UINT, offsetof(Prime_u32, p), Py_READONLY, ""},
     {NULL}
@@ -380,7 +426,7 @@ static PyMemberDef Prime_u32_members[] = {
 
 static PyTypeObject Prime_u32_Type = {
     .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name = "mutable_lattice.Prime_u32",
+    .tp_name = "Prime_u32",
     .tp_doc = PyDoc_STR("a 32-bit prime and associated data"),
     .tp_basicsize = sizeof(Prime_u32),
     .tp_flags = Py_TPFLAGS_DEFAULT,
@@ -391,10 +437,11 @@ static PyTypeObject Prime_u32_Type = {
     .tp_repr = Prime_u32_repr,
 };
 
-
 /*********************************************************************/
 /* Vector_u8                                                         */
 /*********************************************************************/
+
+static PyTypeObject VectorModPrime_u8_Type;
 
 typedef struct {
     PyObject_VAR_HEAD
@@ -402,6 +449,500 @@ typedef struct {
     uint8_t data[1];
 } VectorModPrime_u8;
 
+static VectorModPrime_u8 *
+VectorModPrime_u8_zero_impl(uint8_t p, Py_ssize_t N)
+{
+    assert(is_prime_u8(p));
+    VectorModPrime_u8 *self = (VectorModPrime_u8 *)PyType_GenericAlloc(&VectorModPrime_u8_Type, N);
+    if (self == NULL) {
+        return NULL;
+    }
+    self->p = p;
+    return self;
+}
+
+static bool
+big_integer_to_u8_mod_prime(PyObject *x_obj, uint8_t p, uint8_t *dest)
+{
+    PyObject *p_obj = PyLong_FromLong(p);
+    if (p_obj == NULL) {
+        return true;
+    }
+    PyObject *rem = PyNumber_Remainder(x_obj, p_obj);
+    Py_DECREF(p_obj);
+    if (rem == NULL) {
+        return true;
+    }
+    long long x = PyLong_AsLongLong(rem);
+    Py_DECREF(rem);
+    if (x == -1 && PyErr_Occurred()) {
+        return true;
+    }
+    if (0 <= x && x < p) {
+        *dest = x;
+        return false;
+    }
+    PyErr_SetString(PyExc_OverflowError, "number % p was not in range(p)");
+    return true;
+}
+
+static bool
+object_to_u8_mod_prime(PyObject *x_obj, uint8_t p, uint8_t *dest)
+{
+    int overflow;
+    long long x = PyLong_AsLongLongAndOverflow(x_obj, &overflow);
+    if (!overflow) {
+        if (x == -1 && PyErr_Occurred()) {
+            return true;
+        }
+        *dest = ((x % p) + p) % p;
+        return false;
+    }
+    return big_integer_to_u8_mod_prime(x_obj, p, dest);
+}
+
+static PyObject *
+Prime_u8_Vector(PyObject *self, PyObject *arg)
+{
+    assert(Py_TYPE(self) == &Prime_u8_Type);
+    Prime_u8 *pp = (Prime_u8 *)self;
+    uint8_t p = pp->p;
+    if (!PyList_CheckExact(arg)) {
+        PyErr_SetString(PyExc_TypeError, "Prime(p).Vector(a) argument must be list");
+        return NULL;
+    }
+    Py_ssize_t N = PyList_GET_SIZE(arg);
+    VectorModPrime_u8 *vec = VectorModPrime_u8_zero_impl(p, N);
+    if (vec == NULL) {
+        return NULL;
+    }
+    for (Py_ssize_t j = 0; j < N && j < PyList_GET_SIZE(arg); j++) {
+        PyObject *x_obj = Py_NewRef(PyList_GET_ITEM(arg, j));
+        bool err = object_to_u8_mod_prime(x_obj, p, &vec->data[j]);
+        Py_DECREF(x_obj);
+        if (err) {
+            return NULL;
+        }
+    }
+    return (PyObject *)vec;
+}
+
+static PyObject *
+VectorModPrime_u8_tolist(PyObject *self, PyObject *Py_UNUSED(other))
+{
+    assert(Py_TYPE(self) == &VectorModPrime_u8_Type);
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
+    Py_ssize_t N = Py_SIZE(vec);
+    PyObject *result = PyList_New(N);
+    for (Py_ssize_t j = 0; j < N; j++) {
+        PyObject *x = PyLong_FromLong(vec->data[j]);
+        if (x == NULL) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        PyList_SET_ITEM(result, j, x);
+    }
+    return result;
+}
+
+static PyObject *
+VectorModPrime_u8_richcompare(PyObject *a, PyObject *b, int op)
+{
+    if (Py_TYPE(a) != &VectorModPrime_u8_Type || Py_TYPE(b) != &VectorModPrime_u8_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    if (op != Py_EQ && op != Py_NE) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorModPrime_u8 *avec = (VectorModPrime_u8 *)a;
+    VectorModPrime_u8 *bvec = (VectorModPrime_u8 *)b;
+    int equal = (
+        avec->p == bvec->p
+        && Py_SIZE(avec) == Py_SIZE(bvec)
+        && 0 == memcmp(avec->data, bvec->data, Py_SIZE(a)*sizeof(uint8_t))
+    );
+    return PyBool_FromLong(equal ^ (op == Py_NE));
+}
+
+static void
+VectorModPrime_u8_add_impl(uint8_t *dest, uint8_t *a, uint8_t *b, uint8_t p, Py_ssize_t N)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = addmod_u8(a[j], b[j], p);
+    }
+}
+
+static void
+VectorModPrime_u8_iadd_impl(uint8_t *dest, uint8_t *b, uint8_t p, Py_ssize_t N)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = addmod_u8(dest[j], b[j], p);
+    }
+}
+
+static void
+VectorModPrime_u8_sub_impl(uint8_t *dest, uint8_t *a, uint8_t *b, uint8_t p, Py_ssize_t N)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = submod_u8(a[j], b[j], p);
+    }
+}
+
+static void
+VectorModPrime_u8_isub_impl(uint8_t *dest, uint8_t *b, uint8_t p, Py_ssize_t N)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = submod_u8(dest[j], b[j], p);
+    }
+}
+
+static void
+VectorModPrime_u8_mul_impl(uint8_t *dest, uint8_t *src, Py_ssize_t N, uint8_t scalar, uint8_t p)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = mulmod_u8(src[j], scalar, p);
+    }
+}
+
+static void
+VectorModPrime_u8_imul_impl(uint8_t *dest, Py_ssize_t N, uint8_t scalar, uint8_t p)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = mulmod_u8(dest[j], scalar, p);
+    }
+}
+
+static void
+VectorModPrime_u8_negative_impl(uint8_t *dest, uint8_t *src, Py_ssize_t N, uint8_t p)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = negmod_u8(src[j], p);
+    }
+}
+
+static void
+VectorModPrime_u8_subtract_multiple_impl(uint8_t *dest, uint8_t *src, Py_ssize_t N, uint8_t scalar, uint8_t p)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = subtract_multiple_u8(dest[j], scalar, src[j], p);
+    }
+}
+
+static PyObject *
+VectorModPrime_u8_add(PyObject *a, PyObject *b)
+{
+    if (Py_TYPE(a) != &VectorModPrime_u8_Type || Py_TYPE(b) != &VectorModPrime_u8_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorModPrime_u8 *avec = (VectorModPrime_u8 *)a;
+    VectorModPrime_u8 *bvec = (VectorModPrime_u8 *)b;
+    if (avec->p != bvec->p) {
+        PyErr_SetString(PyExc_ValueError, "VectorModPrime_u8 prime mismatch");
+        return NULL;
+    }
+    if (Py_SIZE(avec) != Py_SIZE(bvec)) {
+        PyErr_SetString(PyExc_ValueError, "VectorModPrime_u8 length mismatch");
+        return NULL;
+    }
+    VectorModPrime_u8 *result = VectorModPrime_u8_zero_impl(avec->p, Py_SIZE(avec));
+    if (result == NULL) {
+        return NULL;
+    }
+    VectorModPrime_u8_add_impl(result->data, avec->data, bvec->data, avec->p, Py_SIZE(avec));
+    return (PyObject *)result;
+}
+
+static PyObject *
+VectorModPrime_u8_sub(PyObject *a, PyObject *b)
+{
+    if (Py_TYPE(a) != &VectorModPrime_u8_Type || Py_TYPE(b) != &VectorModPrime_u8_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorModPrime_u8 *avec = (VectorModPrime_u8 *)a;
+    VectorModPrime_u8 *bvec = (VectorModPrime_u8 *)b;
+    if (avec->p != bvec->p) {
+        PyErr_SetString(PyExc_ValueError, "VectorModPrime_u8 prime mismatch");
+        return NULL;
+    }
+    if (Py_SIZE(avec) != Py_SIZE(bvec)) {
+        PyErr_SetString(PyExc_ValueError, "VectorModPrime_u8 length mismatch");
+        return NULL;
+    }
+    VectorModPrime_u8 *result = VectorModPrime_u8_zero_impl(avec->p, Py_SIZE(avec));
+    if (result == NULL) {
+        return NULL;
+    }
+    VectorModPrime_u8_sub_impl(result->data, avec->data, bvec->data, avec->p, Py_SIZE(avec));
+    return (PyObject *)result;
+}
+
+static PyObject *
+VectorModPrime_u8_iadd(PyObject *a, PyObject *b)
+{
+    if (Py_TYPE(a) != &VectorModPrime_u8_Type || Py_TYPE(b) != &VectorModPrime_u8_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorModPrime_u8 *avec = (VectorModPrime_u8 *)a;
+    VectorModPrime_u8 *bvec = (VectorModPrime_u8 *)b;
+    if (avec->p != bvec->p) {
+        PyErr_SetString(PyExc_ValueError, "VectorModPrime_u8 prime mismatch");
+        return NULL;
+    }
+    if (Py_SIZE(avec) != Py_SIZE(bvec)) {
+        PyErr_SetString(PyExc_ValueError, "VectorModPrime_u8 length mismatch");
+        return NULL;
+    }
+    VectorModPrime_u8_iadd_impl(avec->data, bvec->data, avec->p, Py_SIZE(avec));
+    return Py_NewRef(a);
+}
+
+static PyObject *
+VectorModPrime_u8_isub(PyObject *a, PyObject *b)
+{
+    if (Py_TYPE(a) != &VectorModPrime_u8_Type || Py_TYPE(b) != &VectorModPrime_u8_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorModPrime_u8 *avec = (VectorModPrime_u8 *)a;
+    VectorModPrime_u8 *bvec = (VectorModPrime_u8 *)b;
+    if (avec->p != bvec->p) {
+        PyErr_SetString(PyExc_ValueError, "VectorModPrime_u8 prime mismatch");
+        return NULL;
+    }
+    if (Py_SIZE(avec) != Py_SIZE(bvec)) {
+        PyErr_SetString(PyExc_ValueError, "VectorModPrime_u8 length mismatch");
+        return NULL;
+    }
+    VectorModPrime_u8_isub_impl(avec->data, bvec->data, avec->p, Py_SIZE(avec));
+    return Py_NewRef(a);
+}
+
+static PyObject *
+VectorModPrime_u8_mul(PyObject *a, PyObject *b)
+{
+    if (Py_TYPE(a) == &VectorModPrime_u8_Type && PyLong_CheckExact(b)) {
+        // don't swap
+    }
+    else if (Py_TYPE(b) == &VectorModPrime_u8_Type && PyLong_CheckExact(a)) {
+        // swap
+        PyObject *tmp = a; a = b; b = tmp;
+    }
+    else {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)a;
+    uint8_t scalar;
+    if (object_to_u8_mod_prime(b, vec->p, &scalar)) {
+        return NULL;
+    }
+    VectorModPrime_u8 *result = VectorModPrime_u8_zero_impl(vec->p, Py_SIZE(vec));
+    if (result == NULL) {
+        return NULL;
+    }
+    VectorModPrime_u8_mul_impl(result->data, vec->data, Py_SIZE(vec), scalar, vec->p);
+    return (PyObject *)result;
+}
+
+static PyObject *
+VectorModPrime_u8_imul(PyObject *a, PyObject *b)
+{
+    assert(Py_TYPE(a) == &VectorModPrime_u8_Type);
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)a;
+    uint8_t scalar;
+    if (object_to_u8_mod_prime(b, vec->p, &scalar)) {
+        return NULL;
+    }
+    VectorModPrime_u8_imul_impl(vec->data, Py_SIZE(vec), scalar, vec->p);
+    return Py_NewRef(a);
+}
+
+static PyObject *
+VectorModPrime_u8_negative(PyObject *a)
+{
+    assert(Py_TYPE(a) == &VectorModPrime_u8_Type);
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)a;
+    VectorModPrime_u8 *result = VectorModPrime_u8_zero_impl(vec->p, Py_SIZE(vec));
+    if (result == NULL) {
+        return NULL;
+    }
+    VectorModPrime_u8_negative_impl(result->data, vec->data, Py_SIZE(vec), vec->p);
+    return (PyObject *)result;
+}
+
+static PyObject *
+VectorModPrime_u8_subtract_multiple(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    assert(Py_TYPE(self) == &VectorModPrime_u8_Type);
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
+    uint8_t p = vec->p;
+    if (nargs != 2) {
+        PyErr_SetString(PyExc_TypeError, "subtract_multiple takes 2 arguments");
+        return NULL;
+    }
+    uint8_t scalar;
+    if (object_to_u8_mod_prime(args[0], p, &scalar)) {
+        return NULL;
+    }
+    if (Py_TYPE(args[1]) != &VectorModPrime_u8_Type) {
+        PyErr_SetString(PyExc_TypeError, "subtract_multiple second argument must be VectorModPrime_u8");
+        return NULL;
+    }
+    VectorModPrime_u8 *other = (VectorModPrime_u8 *)args[1];
+    if (other->p != p) {
+        PyErr_SetString(PyExc_ValueError, "prime mismatch in subtract_multiple");
+        return NULL;
+    }
+    if (Py_SIZE(other) != Py_SIZE(vec)) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in subtract_multiple");
+        return NULL;
+    }
+    VectorModPrime_u8_subtract_multiple_impl(vec->data, other->data, Py_SIZE(vec), scalar, p);
+    Py_RETURN_NONE;
+}
+
+PyObject *
+VectorModPrime_u8_repr(PyObject *self)
+{
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
+    return PyUnicode_FromFormat("Prime_u8(%u).Vector(%R)",
+        (unsigned int)vec->p,
+        VectorModPrime_u8_tolist(self, NULL));
+}
+
+PyObject *
+VectorModPrime_u8_str(PyObject *self)
+{
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
+    if (Py_SIZE(vec) == 0) {
+        return PyUnicode_FromStringAndSize("[]", 2);
+    }
+    uint8_t p = vec->p;
+    Py_ssize_t width = 0, q = p;
+    while (q) {
+        q /= 10;
+        width++;
+    }
+    char *buf = PyMem_Malloc(Py_SIZE(vec)*(width + 1) + 1);
+    if (buf == NULL) {
+        return PyErr_NoMemory();
+    }
+    char *dest = buf;
+    *dest++ = '[';
+    for (Py_ssize_t j = 0; j < Py_SIZE(vec); j++) {
+        if (j) {
+            *dest++ = ' ';
+        }
+        uint8_t x = vec->data[j];
+        assert(x < p);
+        dest[width-1] = '0' + (x % 10);
+        x /= 10;
+        for (int jj = width-2; jj >= 0; jj--) {
+            dest[jj] = x ? '0' + (x % 10) : ' ';
+            x /= 10;
+        }
+        dest += width;
+    }
+    *dest++ = ']';
+    assert(dest - buf == Py_SIZE(vec)*(width + 1) + 1);
+    PyObject *result = PyUnicode_FromStringAndSize(buf, Py_SIZE(vec)*(width + 1) + 1);
+    PyMem_Free(buf);
+    return result;
+}
+
+PyObject *
+VectorModPrime_u8_shuffled_by_action(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    assert(Py_TYPE(self) == &VectorModPrime_u8_Type);
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
+    Py_ssize_t result_length;
+    if (nargs == 1) {
+        result_length = Py_SIZE(vec);
+    }
+    else if (nargs == 2) {
+        if (!PyLong_CheckExact(args[1])) {
+            PyErr_SetString(PyExc_TypeError, "shuffled_by_action second argument must be int");
+            return NULL;
+        }
+        result_length = PyLong_AsSsize_t(args[1]);
+        if (result_length == -1 && PyErr_Occurred()) {
+            return NULL;
+        }
+    }
+    else {
+        PyErr_SetString(PyExc_TypeError, "shuffled_by_action takes two arguments");
+        return NULL;
+    }
+    Py_buffer buf;
+    if (PyObject_GetBuffer(args[0], &buf, PyBUF_SIMPLE) < 0) {
+        return NULL;
+    }
+    if (buf.itemsize != sizeof(Py_ssize_t)) {
+        PyErr_SetString(PyExc_TypeError, "shuffled_by_action first argument must be buffer of pointer-sized integers");
+        return NULL;
+    }
+    Py_ssize_t *indexes = (Py_ssize_t *)buf.buf;
+    assert(buf.ndim == 1);
+    Py_ssize_t N = buf.len / sizeof(Py_ssize_t);
+    if (N != Py_SIZE(vec)) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in shuffled_by_action");
+        return NULL;
+    }
+    uint8_t p = vec->p;
+    VectorModPrime_u8 *result = VectorModPrime_u8_zero_impl(p, result_length);
+    if (result == NULL) {
+        PyBuffer_Release(&buf);
+        return NULL;
+    }
+    for (Py_ssize_t j = 0; j < N; j++) {
+        Py_ssize_t aj = indexes[j];
+        if (aj < 0 || aj >= result_length) {
+            PyErr_SetString(PyExc_IndexError, "shuffled_by_action out of bounds");
+            PyBuffer_Release(&buf);
+            return NULL;
+        }
+        result->data[aj] = addmod_u8(result->data[aj], vec->data[j], p);
+    }
+    PyBuffer_Release(&buf);
+    return (PyObject *)result;
+}
+
+static PyMethodDef VectorModPrime_u8_methods[] = {
+    {"tolist", VectorModPrime_u8_tolist, METH_NOARGS, "v.tolist() returns the list of int representing v"},
+    {"subtract_multiple", (PyCFunction)(void(*)(void))VectorModPrime_u8_subtract_multiple,
+        METH_FASTCALL, "v.subtract_multiple(t, w) does v -= t*w"},
+    {"shuffled_by_action", (PyCFunction)(void(*)(void))VectorModPrime_u8_shuffled_by_action,
+        METH_FASTCALL, "v.shuffled_by_action(a) does for each i: result[a[i]] += v[i]"},
+    {NULL, NULL, 0, NULL}
+};
+
+static PyMemberDef VectorModPrime_u8_members[] = {
+    {"p", Py_T_UBYTE, offsetof(VectorModPrime_u8, p), Py_READONLY, "the modulus p of Z/pZ"},
+    {NULL}
+};
+
+static PyNumberMethods VectorModPrime_u8_as_number = {
+    .nb_add = VectorModPrime_u8_add,
+    .nb_subtract = VectorModPrime_u8_sub,
+    .nb_multiply = VectorModPrime_u8_mul,
+    .nb_negative = VectorModPrime_u8_negative,
+    .nb_inplace_add = VectorModPrime_u8_iadd,
+    .nb_inplace_subtract = VectorModPrime_u8_isub,
+    .nb_inplace_multiply = VectorModPrime_u8_imul,
+};
+
+static PyTypeObject VectorModPrime_u8_Type = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "VectorModPrime_u8",
+    .tp_doc = PyDoc_STR("A vector of Z/pZ values, where p is a prime u8"),
+    .tp_basicsize = sizeof(VectorModPrime_u8) - sizeof(uint8_t),
+    .tp_itemsize = sizeof(uint8_t),
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    .tp_methods = VectorModPrime_u8_methods,
+    .tp_members = VectorModPrime_u8_members,
+    .tp_as_number = &VectorModPrime_u8_as_number,
+    .tp_richcompare = VectorModPrime_u8_richcompare,
+    .tp_str = VectorModPrime_u8_str,
+    .tp_repr = VectorModPrime_u8_repr,
+};
 
 /*********************************************************************/
 /* Vector_u32                                                        */
@@ -419,8 +960,8 @@ typedef struct {
 
 typedef struct {
     PyObject_VAR_HEAD
-    uint8_t p;
-    Prime_u8 *prime_u8;
+    uint8_t p; // The prime number
+    Prime_u8 *prime_u8; // The data associated to p (the table of inverses)
     Py_ssize_t N; // The ambient dimension; we're a sublattice of Z^N
     Py_ssize_t rank; // The number of basis vectors
     Py_ssize_t maxrank; // How many vectors we have space for
@@ -457,6 +998,12 @@ mutable_lattice_module_exec(PyObject *m)
         return -1;
     }
     if (PyModule_AddObjectRef(m, "Prime_u8", (PyObject *)&Prime_u8_Type) < 0) {
+        return -1;
+    }
+    if (PyType_Ready(&VectorModPrime_u8_Type) < 0) {
+        return -1;
+    }
+    if (PyModule_AddObjectRef(m, "VectorModPrime_u8", (PyObject *)&VectorModPrime_u8_Type) < 0) {
         return -1;
     }
     if (PyType_Ready(&Prime_u32_Type) < 0) {
