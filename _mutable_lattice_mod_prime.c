@@ -892,6 +892,7 @@ Lattice_u8_push_vector(Lattice_u8 *L, uint8_t *vec)
     Py_ssize_t N = L->N;
     assert(L->rank <= L->maxrank);
     uint8_t *data = L->data + N * L->rank;
+    assert(data != vec);
     memcpy(data, vec, L->N * sizeof(uint8_t));
     return data;
 }
@@ -956,7 +957,7 @@ Lattice_u8_new_impl(Prime_u8 *prime_u8, Py_ssize_t N, Py_ssize_t maxrank)
 }
 
 static bool
-Lattice_add_vector_or_list_impl(PyObject *self, PyObject *other);
+Lattice_u8_add_vector_or_list_impl(PyObject *self, PyObject *other);
 
 static PyObject *
 Prime_u8_Lattice(PyObject *prime_u8, PyObject *args, PyObject *kwargs)
@@ -982,7 +983,7 @@ Prime_u8_Lattice(PyObject *prime_u8, PyObject *args, PyObject *kwargs)
         return NULL;
     }
     for (Py_ssize_t i = 0; i < PyList_GET_SIZE(data); i++) {
-        if (Lattice_add_vector_or_list_impl(result, PyList_GET_ITEM(data, i))) {
+        if (Lattice_u8_add_vector_or_list_impl(result, PyList_GET_ITEM(data, i))) {
             Py_DECREF(result);
             return NULL;
         }
@@ -1007,7 +1008,7 @@ Lattice_u8_get_basis(PyObject *self, PyObject *Py_UNUSED(ignored))
             Py_DECREF(result);
             return NULL;
         }
-        memmove(v->data, L->basis[i], N*sizeof(uint8_t));
+        memcpy(v->data, L->basis[i], N*sizeof(uint8_t));
         PyList_SET_ITEM(result, i, v);
     }
     return result;
@@ -1090,7 +1091,7 @@ Lattice_u8_insert_vector_with_pivot(Lattice_u8 *L, uint8_t *vec, Py_ssize_t j)
 }
 
 static bool
-Lattice_add_vector_impl(Lattice_u8 *L, uint8_t *vec)
+Lattice_u8_add_vector_impl(Lattice_u8 *L, uint8_t *vec)
 {
     Py_ssize_t N = L->N;
     if (L->rank == N) {
@@ -1130,7 +1131,7 @@ Lattice_add_vector_impl(Lattice_u8 *L, uint8_t *vec)
 }
 
 static PyObject *
-Lattice_add_vector(PyObject *self, PyObject *other)
+Lattice_u8_add_vector(PyObject *self, PyObject *other)
 {
     assert(Py_TYPE(self) == &Lattice_u8_Type);
     Lattice_u8 *L = (Lattice_u8 *)self;
@@ -1142,14 +1143,14 @@ Lattice_add_vector(PyObject *self, PyObject *other)
         PyErr_SetString(PyExc_ValueError, "length mismatch in Lattice.add_vector");
         return NULL;
     }
-    if (Lattice_add_vector_impl(L, ((VectorModPrime_u8 *)other)->data)) {
+    if (Lattice_u8_add_vector_impl(L, ((VectorModPrime_u8 *)other)->data)) {
         return NULL;
     }
     Py_RETURN_NONE;
 }
 
 static bool
-Lattice_add_vector_or_list_impl(PyObject *self, PyObject *other)
+Lattice_u8_add_vector_or_list_impl(PyObject *self, PyObject *other)
 {
     if (Py_TYPE(other) == &PyList_Type) {
         assert(Py_TYPE(self) == &Lattice_u8_Type);
@@ -1166,7 +1167,7 @@ Lattice_add_vector_or_list_impl(PyObject *self, PyObject *other)
         PyErr_SetString(PyExc_TypeError, "Lattice data entries must be list or Vector");
         return true;
     }
-    PyObject *res = Lattice_add_vector(self, other);
+    PyObject *res = Lattice_u8_add_vector(self, other);
     Py_DECREF(other);
     if (res == NULL) {
         return true;
@@ -1210,7 +1211,7 @@ Lattice_u8_contains_impl(Lattice_u8 *L, uint8_t *vec)
         return true;
     }
 
-    Lattice_u8_push_vector(L, vec);
+    vec = Lattice_u8_push_vector(L, vec);
     Py_ssize_t *col_to_pivot = L->col_to_pivot;
     uint8_t p = L->prime_u8->p;
     for (; j < N; j++) {
@@ -1255,6 +1256,7 @@ static PySequenceMethods Lattice_u8_as_sequence = {
 static PyMethodDef Lattice_u32_methods[] = {
     {"tolist", Lattice_u8_tolist, METH_NOARGS, "return a list of lists representing a basis for this space"},
     {"get_basis", Lattice_u8_get_basis, METH_NOARGS, "return a list of basis Vectors for this space"},
+    {"add_vector", Lattice_u8_add_vector, METH_O, "add another Vector to this lattice"},
     {NULL, NULL, 0, NULL}
 };
 

@@ -1,6 +1,7 @@
 import unittest
 from array import array
 import sys
+import random
 
 WORD = {2**31-1: 'i', 2**63-1: 'q'}[sys.maxsize]
 assert array(WORD, []).itemsize == {'i': 4, 'q': 8}[WORD]
@@ -71,7 +72,6 @@ class Test_ModInverse(unittest.TestCase):
                 self.assertEqual(b, pow(a, -1, p))
     
     def test_inverse_u32_random(self):
-        import random
         random.seed(123)
         for _ in range(1000):
             a, p = sorted([random.getrandbits(32), random.getrandbits(32)])
@@ -324,6 +324,82 @@ class Test_Lattice_u8(unittest.TestCase):
         self.assertNotIn(pp.Vector([1, 1, 0, 0, 0, 0]), L)
         self.assertNotIn(pp.Vector([2, 2, 0, 0, 2, 2]), L)
         self.assertNotIn(pp.Vector([0, 0, 0, 0, 1, 1]), L)
+
+    def test_add_vector(self):
+        pp = Prime_u8(11)
+        L = pp.Lattice(4)
+        self.assertEqual(L.tolist(), [])
+        L.add_vector(pp.Vector([0, 0, 0, 4]))
+        self.assertEqual(L.tolist(), [[0, 0, 0, 1]])
+        L.add_vector(pp.Vector([0, 2, 2, 2]))
+        self.assertEqual(L.tolist(), [[0, 1, 1, 1], [0, 0, 0, 1]])
+        L.add_vector(pp.Vector([1, 1, 1, 1]))
+        self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 0, 1]])
+        L.add_vector(pp.Vector([0, 0, 3, 3]))
+        self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 1, 1], [0, 0, 0, 1]])
+        L.add_vector(pp.Vector([1, 2, 3, 5]))
+        self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 1, 1], [0, 0, 0, 1]])
+
+    def test_random(self):
+        random.seed(123)
+        p = 5
+        pp = Prime_u8(p)
+        for N in [0, 1, 2, 3, 4, 5, 10, 20]:
+            for _ in range(20):
+                mod = pp.Lattice(N)
+                vecs = [
+                    pp.Vector([random.randrange(p) for _ in range(N)])
+                    for _ in range(random.randrange(N + 2))
+                ]
+                zero = pp.Vector([0] * N)
+                vec0 = vecs[0] if vecs else zero
+                for vec in vecs:
+                    mod.add_vector(vec)
+                    self.assertIn(vec, mod)
+                    self.assertIn(zero-vec, mod)
+                    self.assertIn(3*vec, mod)
+                    self.assertIn(vec0 + vec, mod)
+                    self.assertIn(3*vec0-4*vec, mod)
+                lin_combo = pp.Vector([0] * N)
+                for vec in vecs:
+                    lin_combo += random.randrange(p) * vec
+                self.assertIn(lin_combo, mod)
+                basis = mod.get_basis()
+                for to_remove in basis:
+                    submod = pp.Lattice(N)
+                    for vec in basis:
+                        if vec != to_remove:
+                            submod.add_vector(vec)
+                    self.assertNotIn(to_remove, submod)
+                    also_outside = to_remove
+                    for vec in submod.get_basis():
+                        also_outside += random.randint(-2, 2) * vec
+                    self.assertNotIn(also_outside, submod)
+
+    def test_against_pylattice(self):
+        random.seed(123)
+        p = 2
+        pp = Prime_u8(p)
+        for N in [0, 1, 2, 3, 4, 5, 10, 20]:
+            for _ in range(200):
+                mod = pp.Lattice(N)
+                vecs = [
+                    pp.Vector([random.randrange(p) for _ in range(N)])
+                    for _ in range(random.randrange(N + 2))
+                ]
+                pymod = PyLatticeModPrime(p, N)
+                for vec in vecs:
+                    mod.add_vector(vec)
+                    pymod.add_vector(vec.tolist())
+                    self.assertEqual(mod.tolist(), pymod.basis)
+
+    def test_contains_does_not_mutate_vector(self):
+        pp = Prime_u8(3)
+        L = pp.Lattice(3, [[1, 0, 0], [0, 1, 1]])
+        v = pp.Vector([2, 2, 2])
+        self.assertEqual(v.tolist(), [2, 2, 2])
+        v in L
+        self.assertEqual(v.tolist(), [2, 2, 2])
 
 if __name__ == "__main__":
     unittest.main()
