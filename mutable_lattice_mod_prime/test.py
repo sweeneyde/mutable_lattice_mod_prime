@@ -1,5 +1,6 @@
-import unittest
 from array import array
+import unittest
+import itertools
 import sys
 import random
 
@@ -7,7 +8,7 @@ WORD = {2**31-1: 'i', 2**63-1: 'q'}[sys.maxsize]
 assert array(WORD, []).itemsize == {'i': 4, 'q': 8}[WORD]
 
 from . import (
-    is_prime_u8, is_prime_u32, inverse_u32, SMALL_PRIMES,
+    is_prime_u8, is_prime_u32, inverse_u32, PRIMES_UNDER_256, PRIMES_UNDER_1000,
     Prime_u8, Prime_u32,
 )
 
@@ -40,8 +41,7 @@ class TestPyLatticeModPrime(unittest.TestCase):
 
 class Test_IsPrime(unittest.TestCase):
     def test_is_prime_u8(self):
-        self.assertEqual([x for x in range(256) if is_prime_u8(x)],
-                         [x for x in SMALL_PRIMES if x < 256])
+        self.assertEqual([x for x in range(256) if is_prime_u8(x)], list(PRIMES_UNDER_256))
 
     def test_is_prime_u8_overflow(self):
         with self.assertRaises(OverflowError):
@@ -50,8 +50,7 @@ class Test_IsPrime(unittest.TestCase):
     def test_is_prime_u32_small(self):
         self.assertTrue(is_prime_u32(23))
         self.assertTrue(is_prime_u32(61))
-        self.assertEqual([x for x in range(max(SMALL_PRIMES) + 1) if is_prime_u32(x)],
-                         [x for x in SMALL_PRIMES])
+        self.assertEqual([x for x in range(1000) if is_prime_u32(x)], list(PRIMES_UNDER_1000))
 
     def test_is_prime_u32_large(self):
         self.assertEqual([x for x in range(2**32-1000, 2**32) if is_prime_u32(x)],
@@ -64,7 +63,7 @@ class Test_IsPrime(unittest.TestCase):
 
 class Test_ModInverse(unittest.TestCase):
     def test_inverse_u32(self):
-        for p in SMALL_PRIMES:
+        for p in PRIMES_UNDER_1000:
             for a in range(1, p):
                 b = inverse_u32(a, p)
                 self.assertIn(b, range(p))
@@ -156,6 +155,46 @@ class Test_VectorModPrime_u8(unittest.TestCase):
         v = Prime_u8(5).Vector([4, 3, 2, 1, 0])
         self.assertEqual(v.tolist(), [4, 3, 2, 1, 0])
         self.assertEqual(v.p, 5)
+
+    def test_length(self):
+        pp = Prime_u8(71)
+        self.assertEqual(len(pp.Vector([])), 0)
+        self.assertEqual(len(pp.Vector([10])), 1)
+        self.assertEqual(len(pp.Vector([10, 20])), 2)
+        self.assertEqual(len(pp.Vector([10, 20, 30])), 3)
+
+    def test_getitem(self):
+        v = Prime_u8(71).Vector([0, 10, 20, 30, 40])
+        self.assertEqual(v[0], 0)
+        self.assertEqual(v[1], 10)
+        self.assertEqual(v[2], 20)
+        self.assertEqual(v[3], 30)
+        self.assertEqual(v[4], 40)
+        with self.assertRaises(IndexError): v[5]
+        self.assertEqual(v[-1], 40)
+        self.assertEqual(v[-2], 30)
+        self.assertEqual(v[-3], 20)
+        self.assertEqual(v[-4], 10)
+        self.assertEqual(v[-5], 0)
+        with self.assertRaises(IndexError): v[-6]
+
+    def test_iterable(self):
+        self.assertEqual(tuple(Prime_u8(5).Vector([1, 2, 3])), (1, 2, 3))
+
+    def test_setitem(self):
+        v = Prime_u8(71).Vector([0, 10, 20, 30, 40])
+        self.assertEqual(v[2], 20)
+        v[2] = 21
+        self.assertEqual(v[2], 21)
+        self.assertEqual(v.tolist(), [0, 10, 21, 30, 40])
+
+    def test_copy(self):
+        v = Prime_u8(71).Vector([0, 10, 20, 30, 40])
+        w = v.copy()
+        v[1], v[2], v[3] = 11, 21, 31
+        w[1], w[2], w[3] = 12, 22, 32
+        self.assertEqual(v.tolist(), [0, 11, 21, 31, 40])
+        self.assertEqual(w.tolist(), [0, 12, 22, 32, 40])
 
     def test_VectorModPrime_u8_add(self):
         pp = Prime_u8(7)
@@ -249,6 +288,16 @@ class Test_VectorModPrime_u8(unittest.TestCase):
         self.assertEqual(v.shuffled_by_action(array(WORD, [2, 2, 2, 2, 2])),
                          pp.Vector([0, 0, 100 % 97, 0, 0]))
 
+    def test_vector_ops_exhaustive(self):
+        for p in (2, 3, 5, 7, 11, 13):
+            pp = Prime_u8(p)
+            data1 = [i for i in range(p) for j in range(p)]
+            data2 = [j for i in range(p) for j in range(p)]
+            self.assertEqual((pp.Vector(data1) + pp.Vector(data2)).tolist(),
+                             [(a + b) % p for a, b in zip(data1, data2)])
+            self.assertEqual((pp.Vector(data1) - pp.Vector(data2)).tolist(),
+                             [(a - b) % p for a, b in zip(data1, data2)])
+
 class Test_Lattice_u8(unittest.TestCase):
     def test_creation(self):
         pp = Prime_u8(7)
@@ -274,6 +323,7 @@ class Test_Lattice_u8(unittest.TestCase):
         self.assertEqual(pp.Lattice(3, [[2, 2, 2], [0, 3, 3], [0, 0, 4]]).tolist(), [[1, 1, 1], [0, 1, 1], [0, 0, 1]])
         self.assertEqual(pp.Lattice(3, [[1, 0, 1], [2, 0, 3]]).tolist(), [[1, 0, 1], [0, 0, 1]])
         self.assertEqual(pp.Lattice(3, [[2, 0, 3], [1, 0, 1]]).tolist(), [[1, 0, 5], [0, 0, 1]])
+        self.assertEqual(pp.Lattice(4, [[2, 1, 1, 3], [0, 0, 4, 5]]).tolist(), [[1, 4, 4, 5], [0, 0, 1, 3]])
 
     def test_row_echelon_2(self):
         pp = Prime_u8(3)
@@ -325,6 +375,42 @@ class Test_Lattice_u8(unittest.TestCase):
         self.assertNotIn(pp.Vector([2, 2, 0, 0, 2, 2]), L)
         self.assertNotIn(pp.Vector([0, 0, 0, 0, 1, 1]), L)
 
+    def test_equality(self):
+        pp = Prime_u8(5)
+        self.assertEqual(pp.Lattice(2, [[2, 2]]), pp.Lattice(2, [[3, 3]]))
+        self.assertEqual(pp.Lattice(2, [[1, 3], [0, 1]]), pp.Lattice(2, [[1, 0], [0, 1]]))
+        self.assertEqual(pp.Lattice(4, [[1, 2, 3, 4], [0, 0, 1, 3]]), pp.Lattice(4, [[1, 2, 0, 0], [0, 0, 1, 3]]))
+        self.assertNotEqual(pp.Lattice(2), pp.Lattice(3))
+        self.assertNotEqual(pp.Lattice(3, []), pp.Lattice(3, [[1, 1, 1]]))
+        self.assertNotEqual(pp.Lattice(3, [[1, 1, 1]]), pp.Lattice(3, [[1, 2, 1]]))
+
+    def test_comparison_exhaustive(self):
+        p = 3
+        pp = Prime_u8(p)
+        # get all row echelon forms
+        vectors = [[1,0,0],[1,0,1],[1,0,2],
+                   [1,1,0],[1,1,1],[1,1,2],
+                   [1,2,0],[1,2,1],[1,2,2],
+                   [0,1,0],[0,1,1],[0,1,2],[0,0,1]]
+        pairs = [[u, v] for u, v in itertools.combinations(vectors, 2) if u.index(1) < v.index(1)]
+        triples = [[u, v, w] for u, v in pairs for w in vectors if v.index(1) < w.index(1)]
+        spaces = (
+            [pp.Lattice(3)]
+            + [pp.Lattice(3, [v]) for v in vectors]
+            + [pp.Lattice(3, pair) for pair in pairs]
+            + [pp.Lattice(3, triple) for triple in triples]
+        )
+        for a in spaces:
+            for b in spaces:
+                a_in_b = all(map(b.__contains__, a.get_basis()))
+                b_in_a = all(map(a.__contains__, b.get_basis()))
+                self.assertEqual(a == b, a_in_b and b_in_a)
+                self.assertEqual(a != b, not (a_in_b and b_in_a))
+                self.assertEqual(a <= b, a_in_b)
+                self.assertEqual(a < b, a_in_b and not b_in_a)
+                self.assertEqual(a >= b, b_in_a)
+                self.assertEqual(a > b, b_in_a and not a_in_b)
+
     def test_add_vector(self):
         pp = Prime_u8(11)
         L = pp.Lattice(4)
@@ -339,6 +425,33 @@ class Test_Lattice_u8(unittest.TestCase):
         self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 1, 1], [0, 0, 0, 1]])
         L.add_vector(pp.Vector([1, 2, 3, 5]))
         self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 1, 1], [0, 0, 0, 1]])
+
+    def test_copy(self):
+        pp = Prime_u8(7)
+        L = pp.Lattice(3, [[1, 2, 3], [0, 1, 2]])
+        L2 = L.copy()
+        L2.add_vector(pp.Vector([0, 0, 1]))
+        self.assertEqual(L.tolist(), [[1, 2, 3], [0, 1, 2]])
+        self.assertEqual(L2.tolist(), [[1, 2, 3], [0, 1, 2], [0, 0, 1]])
+
+    def test_reduce(self):
+        # reduced row echelon form
+        pp = Prime_u8(7)
+        L = pp.Lattice(3, [[2, 2, 2], [3, 3, 3], [4, 4, 4]])
+        L.reduce()
+        self.assertEqual(L.tolist(), [[1, 1, 1]])
+        L = pp.Lattice(3, [[2, 2, 2], [0, 3, 3], [0, 0, 4]])
+        L.reduce()
+        self.assertEqual(L.tolist(), [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        L = pp.Lattice(3, [[1, 0, 1], [2, 0, 3]])
+        L.reduce()
+        self.assertEqual(L.tolist(), [[1, 0, 0], [0, 0, 1]])
+        L = pp.Lattice(3, [[2, 0, 3], [1, 0, 1]])
+        L.reduce()
+        self.assertEqual(L.tolist(), [[1, 0, 0], [0, 0, 1]])
+        L = pp.Lattice(4, [[2, 1, 1, 3], [0, 0, 4, 5]])
+        L.reduce()
+        self.assertEqual(L.tolist(), [[1, 4, 0, 0], [0, 0, 1, 3]])
 
     def test_random(self):
         random.seed(123)
@@ -360,10 +473,16 @@ class Test_Lattice_u8(unittest.TestCase):
                     self.assertIn(3*vec, mod)
                     self.assertIn(vec0 + vec, mod)
                     self.assertIn(3*vec0-4*vec, mod)
+
+                copy = mod.copy()
+                copy.reduce()
+                self.assertEqual(copy, mod)
+
                 lin_combo = pp.Vector([0] * N)
                 for vec in vecs:
                     lin_combo += random.randrange(p) * vec
                 self.assertIn(lin_combo, mod)
+
                 basis = mod.get_basis()
                 for to_remove in basis:
                     submod = pp.Lattice(N)
