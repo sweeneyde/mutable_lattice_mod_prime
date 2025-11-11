@@ -316,12 +316,14 @@ Prime_u8_repr(PyObject *self)
 
 static PyObject *Prime_u8_Vector(PyObject *self, PyObject *arg);
 static PyObject *Prime_u8_Lattice(PyObject *prime_u8, PyObject *args, PyObject *kwargs);
+static PyObject *Prime_u8_Lattice_full(PyObject *prime_u8, PyObject *arg);
 
 static PyMethodDef Prime_u8_methods[] = {
     {"inverse", Prime_u8_inverse, METH_O, "Prime(p).inverse(a) gets the multiplicative inverse of a modulo p"},
     {"Vector", Prime_u8_Vector, METH_O, "Prime(p).Vector([x0, ..., xn]) creates a Vector of Z/pZ values"},
     {"Lattice", (PyCFunction)(void(*)(void))Prime_u8_Lattice, METH_VARARGS | METH_KEYWORDS,
         "Prime(p).Lattice(N, vectors, maxrank=-1) creates as space of vectors over Z/pZ"},
+    {"Lattice_full", Prime_u8_Lattice_full, METH_O, "Prime(p).Lattice_Full(N) gives the entire space (Z/pZ)^N"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -718,10 +720,15 @@ VectorModPrime_u8_subtract_multiple(PyObject *self, PyObject *const *args, Py_ss
 PyObject *
 VectorModPrime_u8_repr(PyObject *self)
 {
+    PyObject *tolist = VectorModPrime_u8_tolist(self, NULL);
+    if (tolist == NULL) {
+        return NULL;
+    }
     VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
-    return PyUnicode_FromFormat("Prime_u8(%u).Vector(%R)",
-        (unsigned int)vec->p,
-        VectorModPrime_u8_tolist(self, NULL));
+    PyObject *result = PyUnicode_FromFormat("Prime_u8(%u).Vector(%R)",
+        (unsigned int)vec->p, tolist);
+    Py_DECREF(tolist);
+    return result;
 }
 
 PyObject *
@@ -926,13 +933,13 @@ typedef struct {
     Py_ssize_t *col_to_pivot; // length=N. -1 if no pivot
     Py_ssize_t *row_to_pivot; // logical length=rank. Every row has a pivot.
     uint8_t *data; // Space for (maxrank+1)*N uint8_t
-    uint8_t *basis[1]; // space for N Pointer-to-TagInts
+    uint8_t *basis[1]; // space for N Pointer-to-uint8_t
     // The data hangs off the end of this struct.
     // Format:
     //    * The struct members leading up to L.basis
     //    * Then L.basis[N] (so we can shuffle rows around)
     //    * then space for 3*N*Py_ssize_t arrays above
-    //    * then space for (maxrank+1)*N TagInts, pointed to by the above.
+    //    * then space for (maxrank+1)*N uint8_t, pointed to by the above.
     // Technically we don't need to store all of the pointers above
     // and could recalculate, but I don't think we'll be starved
     // by this constant space overhead.
@@ -1042,6 +1049,38 @@ Prime_u8_Lattice(PyObject *prime_u8, PyObject *args, PyObject *kwargs)
     }
     return result;
 }
+
+static PyObject *
+Prime_u8_Lattice_full(PyObject *prime_u8, PyObject *arg)
+{
+    if (!PyLong_CheckExact(arg)) {
+        PyErr_SetString(PyExc_TypeError, "Lattice_full(N) argument must be int");
+        return NULL;
+    }
+    Py_ssize_t N = PyLong_AsSsize_t(arg);
+    if (N == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (N < 0) {
+        PyErr_SetString(PyExc_ValueError, "Lattice_full(N) argument cannot be negative");
+        return NULL;
+    }
+    Lattice_u8 *result = Lattice_u8_new_impl((Prime_u8 *)prime_u8, N, N);
+    if (result == NULL) {
+        return NULL;
+    }
+    result->num_zero_columns = 0;
+    for (Py_ssize_t i = 0; i < N; i++) {
+        result->col_to_pivot[i] = i;
+        result->row_to_pivot[i] = i;
+        uint8_t *row = &result->data[i*N];
+        row[i] = 1;
+        result->basis[i] = row;
+    }
+    result->rank = N;
+    return (PyObject *)result;
+}
+
 
 static PyObject *
 Lattice_u8_get_basis(PyObject *self, PyObject *Py_UNUSED(ignored))
@@ -1403,17 +1442,302 @@ Lattice_u8_copy(PyObject *self, PyObject *Py_UNUSED(ignored))
     return (PyObject *)L2;
 }
 
+static inline Py_ssize_t
+uf_find(Py_ssize_t *parent, Py_ssize_t x0)
+{
+    Py_ssize_t x = x0, px;
+    while ((px = parent[x]) != x) {
+        x = px;
+    }
+    Py_ssize_t root = x;
+    x = x0;
+    while ((px = parent[x]) != x) {
+        parent[x] = root;
+        x = px;
+    }
+    return root;
+}
+
+static inline void
+uf_union(Py_ssize_t *parent, Py_ssize_t *size, Py_ssize_t x, Py_ssize_t y)
+{
+    x = uf_find(parent, x);
+    y = uf_find(parent, y);
+    if (x == y) {
+        return;
+    }
+    if (size[x] < size[y]) {
+        Py_ssize_t tmp = x;
+        x = y;
+        y = tmp;
+    }
+    parent[y] = x;
+    size[x] += size[y];
+}
+
+static bool
+unite_group(Py_ssize_t N, Py_ssize_t *parent, Py_ssize_t *size, PyObject *group)
+{
+    PyObject *iter = PyObject_GetIter(group);
+    if (iter == NULL) {
+        return true;
+    }
+    PyObject *item;
+    Py_ssize_t first_index = -1;
+    while ((item = PyIter_Next(iter))) {
+        if (!PyLong_CheckExact(item)) {
+            PyErr_SetString(PyExc_TypeError, "indexes must be ints");
+            goto error;
+        }
+        Py_ssize_t index = PyLong_AsSsize_t(item);
+        if (index == -1 && PyErr_Occurred()) {
+            goto error;
+        }
+        if (!(0 <= index && index < N)) {
+            PyErr_SetString(PyExc_IndexError, "index out of range");
+            goto error;
+        }
+        if (first_index == -1) {
+            first_index = index;
+        }
+        else {
+            uf_union(parent, size, first_index, index);
+        }
+        Py_DECREF(item);
+    }
+    Py_DECREF(iter);
+    return PyErr_Occurred();
+error:
+    Py_DECREF(item);
+    Py_DECREF(iter);
+    return true;
+}
+
+static bool
+unite_groups(Py_ssize_t N, Py_ssize_t *parent, Py_ssize_t *size, PyObject *groups)
+{
+    PyObject *iter = PyObject_GetIter(groups);
+    if (iter == NULL) {
+        return true;
+    }
+    PyObject *item;
+    while ((item = PyIter_Next(iter))) {
+        if (unite_group(N, parent, size, item)) {
+            Py_DECREF(item);
+            Py_DECREF(iter);
+            return true;
+        }
+        Py_DECREF(item);
+    }
+    Py_DECREF(iter);
+    return PyErr_Occurred();
+}
+
+static PyObject *
+Lattice_u8_decompose(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs >= 2) {
+        PyErr_SetString(PyExc_TypeError, "Lattice.decompose(keep_together=[]) takes 0 or 1 arguments");
+        return NULL;
+    }
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    Lattice_u8_reduce_impl(L);
+    Py_ssize_t N = L->N;
+    // Implicit union/find data structure on the indexes
+    Py_ssize_t *uf_parent = PyMem_Malloc(N * sizeof(Py_ssize_t));
+    Py_ssize_t *uf_size = PyMem_Malloc(N * sizeof(Py_ssize_t));
+    // Used later for partitioning. Avoid quadratic time.
+    uint8_t *scratch = PyMem_Malloc(N * sizeof(uint8_t));
+    Py_ssize_t *root_to_component_index = PyMem_Malloc(N * sizeof(Py_ssize_t));
+    Py_ssize_t *indexes_by_component = PyMem_Malloc(N * sizeof(Py_ssize_t));
+    Py_ssize_t *component_to_size = NULL;
+    Py_ssize_t *component_to_indexes_start = NULL;
+    Py_ssize_t *maxranks = NULL;
+    PyObject *result_indexes_by_component = NULL;
+    PyObject *components = NULL;
+    PyObject *result = NULL;
+    if (!(uf_parent && uf_size && root_to_component_index && indexes_by_component && scratch)) {
+        PyErr_NoMemory();
+        goto error;
+    }
+    for (Py_ssize_t j = 0; j < N; j++) {
+        uf_parent[j] = j;
+        uf_size[j] = 1;
+    }
+    for (Py_ssize_t i = 0; i < L->rank; i++) {
+        uint8_t *row = L->basis[i];
+        Py_ssize_t j0 = L->row_to_pivot[i];
+        for (Py_ssize_t j = j0 + 1; j < N; j++) {
+            if (row[j]) {
+                uf_union(uf_parent, uf_size, j0, j);
+            }
+        }
+    }
+    if (nargs == 1) {
+        if (unite_groups(N, uf_parent, uf_size, args[0])) {
+            goto error;
+        }
+    }
+    // flatten
+    for (Py_ssize_t j = 0; j < N; j++) {
+        (void)uf_find(uf_parent, j);
+        assert(uf_parent[uf_parent[j]] == uf_parent[j]);
+    }
+
+    // find num_components and root_to_component_index
+    for (Py_ssize_t j = 0; j < N; j++) {
+        root_to_component_index[j] = -1;
+    }
+    Py_ssize_t num_components = 0;
+    for (Py_ssize_t j = 0; j < N; j++) {
+        if (uf_parent[j] == j) {
+            root_to_component_index[j] = num_components++;
+        }
+    }
+
+    // Allocate buffers that require only num_components entries
+    component_to_indexes_start = PyMem_Malloc(num_components * sizeof(Py_ssize_t));
+    component_to_size = PyMem_Calloc(num_components, sizeof(Py_ssize_t));
+    maxranks = PyMem_Calloc(num_components, sizeof(Py_ssize_t));
+    if (!(component_to_indexes_start && component_to_size && maxranks)) {
+        PyErr_NoMemory();
+        goto error;
+    }
+
+    // build component_to_indexes_start.
+    {
+        Py_ssize_t indexes_start = 0;
+        for (Py_ssize_t j = 0; j < N; j++) {
+            if (uf_parent[j] == j) {
+                Py_ssize_t k = root_to_component_index[j];
+                component_to_indexes_start[k] = indexes_start;
+                Py_ssize_t sub_N = uf_size[j];
+                indexes_start += sub_N;
+            }
+        }
+        assert(indexes_start == N);
+    }
+
+    // build component_to_size and indexes_by_component
+    for (Py_ssize_t j = 0; j < N; j++) {
+        Py_ssize_t k = root_to_component_index[uf_parent[j]];
+        Py_ssize_t start = component_to_indexes_start[k];
+        indexes_by_component[start + component_to_size[k]] = j;
+        component_to_size[k]++;
+    }
+
+    // find maxranks
+    for (Py_ssize_t i = 0; i < L->rank; i++) {
+        maxranks[root_to_component_index[uf_parent[L->row_to_pivot[i]]]]++;
+    }
+
+    // allocate the components
+    if (!(components = PyList_New(num_components))) {
+        goto error;
+    }
+    for (Py_ssize_t k = 0; k < num_components; k++) {
+        Py_ssize_t sub_N = component_to_size[k];
+        assert(sub_N == uf_size[uf_parent[indexes_by_component[component_to_indexes_start[k]]]]);
+        Py_ssize_t maxrank = maxranks[k];
+        assert(maxrank <= sub_N);
+        PyObject *comp = (PyObject *)Lattice_u8_new_impl(L->prime_u8, sub_N, maxrank);
+        if (comp == NULL) {
+            goto error;
+        }
+        PyList_SET_ITEM(components, k, comp);
+    }
+
+    // add in the rows
+    for (Py_ssize_t i = L->rank - 1; i >= 0; i--) {
+        Py_ssize_t k = root_to_component_index[uf_parent[L->row_to_pivot[i]]];
+        Py_ssize_t start = component_to_indexes_start[k];
+        Py_ssize_t sub_N = component_to_size[k];
+        uint8_t *row = L->basis[i];
+        for (Py_ssize_t w = 0; w < sub_N; w++) {
+            Py_ssize_t j = indexes_by_component[start + w];
+            scratch[w] = row[j];
+        }
+        Lattice_u8 *comp = (Lattice_u8 *)PyList_GET_ITEM(components, k);
+        assert(comp->N == sub_N);
+        Lattice_u8_add_vector_impl(comp, scratch);
+    }
+
+    // Construct the lists of indexes
+    if (!(result_indexes_by_component = PyList_New(num_components))) {
+        goto error;
+    }
+    for (Py_ssize_t k = 0; k < num_components; k++) {
+        Py_ssize_t sub_N = component_to_size[k];
+        Py_ssize_t start = component_to_indexes_start[k];
+        PyObject *index_list = PyList_New(sub_N);
+        if (index_list == NULL) {
+            goto error;
+        }
+        PyList_SET_ITEM(result_indexes_by_component, k, index_list);
+        for (Py_ssize_t w = 0; w < sub_N; w++) {
+            Py_ssize_t j = indexes_by_component[start + w];
+            PyObject *j_obj = PyLong_FromSsize_t(j);
+            if (j_obj == NULL) {
+                goto error;
+            }
+            PyList_SET_ITEM(index_list, w, j_obj);
+        }
+    }
+    result = PyTuple_Pack(2, result_indexes_by_component, components);
+error:
+    PyMem_Free(uf_parent);
+    PyMem_Free(uf_size);
+    PyMem_Free(scratch);
+    PyMem_Free(root_to_component_index);
+    PyMem_Free(indexes_by_component);
+    PyMem_Free(component_to_indexes_start);
+    PyMem_Free(component_to_size);
+    PyMem_Free(maxranks);
+    Py_XDECREF(components);
+    Py_XDECREF(result_indexes_by_component);
+    return result;
+}
+
+static PyObject *
+Lattice_u8_repr(PyObject *self)
+{
+    PyObject *tolist = Lattice_u8_tolist(self, NULL);
+    if (tolist == NULL) {
+        return NULL;
+    }
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    PyObject *result = PyUnicode_FromFormat("Prime_u8(%u).Lattice(%zd, %R)",
+        (unsigned int)L->prime_u8->p,
+        L->N, tolist);
+    Py_DECREF(tolist);
+    return result;
+}
+
 static PySequenceMethods Lattice_u8_as_sequence = {
     .sq_contains = Lattice_u8_contains
 };
 
-static PyMethodDef Lattice_u32_methods[] = {
+static PyMethodDef Lattice_u8_methods[] = {
     {"copy", Lattice_u8_copy, METH_NOARGS, "return a new copy of this Lattice"},
     {"tolist", Lattice_u8_tolist, METH_NOARGS, "return a list of lists representing a basis for this space"},
     {"get_basis", Lattice_u8_get_basis, METH_NOARGS, "return a list of basis Vectors for this space"},
     {"add_vector", Lattice_u8_add_vector, METH_O, "add another Vector to this lattice"},
     {"reduce", Lattice_u8_reduce, METH_NOARGS, "put this Lattice basis in *reduced* row-echelon form"},
+    {"decompose", (PyCFunction)(void(*)(void))Lattice_u8_decompose, METH_FASTCALL,
+     "L.decompose(keep_together=[], /) returns a pair ([indexes1, ..., indexesk], [L1, ..., Lk]) that decomposes L into a direct sum of smaller lattices. "
+     "Each lattice Li is the projection of L onto the indexes in indexesi. "
+     "Any sequence of integers provided in as an entry of keep_together will be put into the same direct summand. "},
     {NULL, NULL, 0, NULL}
+};
+
+static PyMemberDef Lattice_u8_members[] = {
+    {"ambient_dimension", Py_T_PYSSIZET, offsetof(Lattice_u8, N), Py_READONLY,
+     "the dimension N of the ambient lattice (Z/pZ)^N"},
+    {"maxrank", Py_T_PYSSIZET, offsetof(Lattice_u8, maxrank), Py_READONLY,
+     "the maximum basis size this Lattice has room to store"},
+    {"rank", Py_T_PYSSIZET, offsetof(Lattice_u8, rank), Py_READONLY,
+     "the number of Vectors in a basis for this Lattice"},
+    {NULL}
 };
 
 static PyTypeObject Lattice_u8_Type = {
@@ -1424,9 +1748,11 @@ static PyTypeObject Lattice_u8_Type = {
     .tp_itemsize = sizeof(uint8_t),
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
     .tp_dealloc = Lattice_u8_dealloc,
-    .tp_methods = Lattice_u32_methods,
+    .tp_methods = Lattice_u8_methods,
+    .tp_members = Lattice_u8_members,
     .tp_as_sequence = &Lattice_u8_as_sequence,
     .tp_richcompare = Lattice_richcompare,
+    .tp_repr = Lattice_u8_repr,
 };
 
 

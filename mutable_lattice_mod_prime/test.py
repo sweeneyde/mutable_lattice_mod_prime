@@ -304,6 +304,8 @@ class Test_Lattice_u8(unittest.TestCase):
         pp.Lattice(3)
         pp.Lattice(3, [])
         pp.Lattice(3, [[2, 1, 1]])
+        pp.Lattice(3, maxrank=1)
+        pp.Lattice(3, [[0, 1, 2], [1, 0, 0]], maxrank=-1)
 
     def test_tolist(self):
         pp = Prime_u8(7)
@@ -316,6 +318,25 @@ class Test_Lattice_u8(unittest.TestCase):
         self.assertEqual(pp.Lattice(3).get_basis(), [])
         self.assertEqual(pp.Lattice(3, []).get_basis(), [])
         self.assertEqual(pp.Lattice(3, [[2, 1, 1]]).get_basis(), [pp.Vector([1, 4, 4])])
+
+    def test_full(self):
+        pp = Prime_u8(3)
+        self.assertEqual(pp.Lattice_full(0).tolist(), [])
+        self.assertEqual(pp.Lattice_full(1).tolist(), [[1]])
+        self.assertEqual(pp.Lattice_full(2).tolist(), [[1, 0], [0, 1]])
+        self.assertEqual(pp.Lattice_full(3).tolist(), [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+
+    def test_maxrank(self):
+        pp = Prime_u8(7)
+        L = pp.Lattice(8, [[1]*8], maxrank=2)
+        self.assertEqual(L.maxrank, 2)
+        self.assertEqual(L.rank, 1)
+        L.add_vector(pp.Vector([0, 0, 0, 0, 1, 2, 3, 4]))
+        self.assertEqual(L.rank, 2)
+        L.add_vector(pp.Vector([-1, -1, -1, -1, 0, 1, 2, 3]))
+        self.assertEqual(L.rank, 2)
+        with self.assertRaises(IndexError):
+            L.add_vector(pp.Vector([0, 1, 0, 0, 0, 0, 0, 0]))
 
     def test_row_echelon_1(self):
         pp = Prime_u8(7)
@@ -519,6 +540,143 @@ class Test_Lattice_u8(unittest.TestCase):
         self.assertEqual(v.tolist(), [2, 2, 2])
         v in L
         self.assertEqual(v.tolist(), [2, 2, 2])
+
+    def test_decompose_simple(self):
+        pp = Prime_u8(59)
+        self.assertEqual(
+            pp.Lattice(2, [[1, 0], [0, 1]]).decompose(),
+            ([[0], [1]], [pp.Lattice(1, [[1]]), pp.Lattice(1, [[1]])])
+        )
+        self.assertEqual(
+            pp.Lattice(2, [[1, 2], [0, 3]]).decompose(),
+            ([[0], [1]], [pp.Lattice(1, [[1]]), pp.Lattice(1, [[1]])])
+        )
+        self.assertEqual(
+            pp.Lattice(2, [[1, 2]]).decompose(),
+            ([[0, 1]],
+             [pp.Lattice(2, [[1, 2]])])
+        )
+        self.assertEqual(
+            pp.Lattice(4, [[1, 0, 0, 2], [0, 1, 0, 0], [0, 0, 1, 1]]).decompose(),
+            ([[0, 2, 3], [1]],
+             [pp.Lattice(3, [[1, 0, 2], [0, 1, 1]]), pp.Lattice(1, [[1]])])
+        )
+        self.assertEqual(pp.Lattice(0).decompose(), ([], []))
+        self.assertEqual(pp.Lattice(1).decompose(), ([[0]], [pp.Lattice(1)]))
+        self.assertEqual(pp.Lattice(1, [[1]]).decompose(), ([[0]], [pp.Lattice(1, [[1]])]))
+        self.assertEqual(
+            pp.Lattice(10).decompose(),
+            ([[i] for i in range(10)],
+             [pp.Lattice(1, maxrank=0) for _ in range(10)])
+        )
+        self.assertEqual(
+            pp.Lattice(5, [[0, 1, 0, 0, 0], [0, 0, 0, 1, 7]]).decompose(),
+            ([[0], [1], [2], [3, 4]],
+             [pp.Lattice(1), pp.Lattice(1, [[1]]), pp.Lattice(1), pp.Lattice(2, [[1, 7]])],
+             )
+        )
+        self.assertEqual(
+            pp.Lattice(5, [[0, 0, 1, 20, 30]]).decompose(),
+            ([[0], [1], [2, 3, 4]],
+             [pp.Lattice(1), pp.Lattice(1), pp.Lattice(3, [[1, 20, 30]])])
+        )
+        self.assertEqual(
+            pp.Lattice(10, [[0,1,0,0,0,0, 0, 0,0,10],
+                            [0,0,1,0,0,0, 0, 0,0, 0],
+                            [0,0,0,1,0,0, 0, 0,0,30],
+                            [0,0,0,0,1,0,40, 0,0, 0],
+                            [0,0,0,0,0,1, 0, 0,0, 0],
+                            [0,0,0,0,0,0, 0, 1,0, 0]]).decompose(),
+            ([[0], [1, 3, 9], [2], [4, 6], [5], [7], [8]],
+             [pp.Lattice(1),
+              pp.Lattice(3, [[1, 0, 10], [0, 1, 30]]),
+              pp.Lattice(1, [[1]]),
+              pp.Lattice(2, [[1, 40]]),
+              pp.Lattice(1, [[1]]),
+              pp.Lattice(1, [[1]]),
+              pp.Lattice(1),])
+        )
+
+    def test_decompose_exhaustive(self):
+        pp = Prime_u8(71)
+        vectors = [pp.Vector(list(v)) for v in itertools.product([-1, 0, 1, 2], repeat=4)]
+        lattices = (
+            [pp.Lattice(4, maxrank=0), pp.Lattice_full(4)]
+            + [pp.Lattice(4, [v], maxrank=1) for v in vectors]
+            + [pp.Lattice(4, [v, w], maxrank=2) for v, w in itertools.combinations(vectors, 2)]
+        )
+        for L in lattices:
+            indexes, summands = L.decompose()
+            self.assertEqual(len(indexes), len(summands))
+            self.assertEqual(sum(map(len, indexes)), 4)
+            self.assertEqual({x for arr in indexes for x in arr}, set(range(4)))
+            self.assertEqual(sum(summand.rank for summand in summands), L.rank)
+            self.assertEqual(sum(summand.ambient_dimension for summand in summands), L.ambient_dimension)
+            for summand in summands:
+                self.assertEqual(summand.maxrank, summand.rank)
+                self.assertEqual(summand.decompose(), ([list(range(summand.ambient_dimension))], [summand]))
+            reconstruction = pp.Lattice(4)
+            for arr, summand in zip(indexes, summands):
+                self.assertEqual(summand.ambient_dimension, len(arr))
+                for vec0 in summand.get_basis():
+                    vec = pp.Vector([0] * 4)
+                    for i, x in enumerate(arr):
+                        vec[x] = vec0[i]
+                    reconstruction.add_vector(vec)
+            self.assertEqual(L, reconstruction)
+
+    def test_decompose_keeping_together(self):
+        pp = Prime_u8(103)
+        L = pp.Lattice(7, [[1,2,0,0,0,0,0],
+                           [0,0,1,0,0,7,0],
+                           [0,0,0,1,3,0,0]])
+        self.assertEqual(L.decompose([]),
+            ([[0, 1], [2, 5], [3, 4], [6]],
+             [pp.Lattice(2, [[1, 2]]),
+              pp.Lattice(2, [[1, 7]]),
+              pp.Lattice(2, [[1, 3]]),
+              pp.Lattice(1)])
+        )
+        self.assertEqual(L.decompose([[1, 5, 4, 6]]), ([[0,1,2,3,4,5,6]], [L]))
+        self.assertEqual(L.decompose([[1, 5]]),
+            ([[0, 1, 2, 5], [3, 4], [6]],
+             [pp.Lattice(4, [[1, 2, 0, 0], [0, 0, 1, 7]]),
+              pp.Lattice(2, [[1, 3]]),
+              pp.Lattice(1)])
+        )
+        self.assertEqual(L.decompose([[0, 4]]),
+            ([[0, 1, 3, 4], [2, 5], [6]],
+             [pp.Lattice(4, [[1, 2, 0, 0], [0, 0, 1, 3]]),
+              pp.Lattice(2, [[1, 7]]),
+              pp.Lattice(1)])
+        )
+        self.assertEqual(L.decompose([[1, 6]]),
+            ([[0, 1, 6], [2, 5], [3, 4]],
+             [pp.Lattice(3, [[1, 2, 0]]),
+              pp.Lattice(2, [[1, 7]]),
+              pp.Lattice(2, [[1, 3]])])
+        )
+        self.assertEqual(L.decompose([[0, 6], [5, 4]]),
+            ([[0, 1, 6], [2, 3, 4, 5]],
+             [pp.Lattice(3, [[1, 2, 0]]),
+              pp.Lattice(4, [[1, 0, 0, 7], [0, 1, 3, 0]])])
+        )
+        self.assertEqual(L.decompose([[0, 3], [2, 6]]),
+            ([[0, 1, 3, 4], [2, 5, 6]],
+             [pp.Lattice(4, [[1, 2, 0, 0], [0, 0, 1, 3]]),
+              pp.Lattice(3, [[1, 7, 0]])])
+        )
+        self.assertEqual(L.decompose([[0, 2], [3, 6]]),
+            ([[0, 1, 2, 5], [3, 4, 6]],
+             [pp.Lattice(4, [[1, 2, 0, 0], [0, 0, 1, 7]]),
+              pp.Lattice(3, [[1, 3, 0]])])
+        )
+        self.assertEqual(L.decompose([[1, 3, 6]]),
+            ([[0, 1, 3, 4, 6], [2, 5]],
+             [pp.Lattice(5, [[1, 2, 0, 0, 0], [0, 0, 1, 3, 0]]),
+              pp.Lattice(2, [[1, 7]])])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
