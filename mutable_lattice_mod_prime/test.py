@@ -9,7 +9,7 @@ assert array(WORD, []).itemsize == {'i': 4, 'q': 8}[WORD]
 
 from . import (
     is_prime_u8, is_prime_u32, inverse_u32, PRIMES_UNDER_256, PRIMES_UNDER_1000,
-    Prime_u8, Prime_u32,
+    Prime_u8, Prime_u32, Prime2,
 )
 
 from .pylattice import LatticeModPrime as PyLatticeModPrime
@@ -747,6 +747,97 @@ class Test_Lattice_u8(unittest.TestCase):
                             for coeff, vec in zip(rel, vecs):
                                 v += coeff * vec
                             self.assertEqual(v, zero)
+
+
+class Test_Mod2(unittest.TestCase):
+    def test_construct_Prime2(self):
+        Prime2()
+        Prime2(2)
+
+    def test_repr(self):
+        self.assertEqual(repr(Prime2()), "Prime2()")
+        self.assertEqual(repr(Prime2(2)), "Prime2()")
+        self.assertEqual(repr(Prime2(2).Vector([])), "Prime2().Vector([])")
+        self.assertEqual(repr(Prime2(2).Vector([0])), "Prime2().Vector([0])")
+        self.assertEqual(repr(Prime2(2).Vector([1])), "Prime2().Vector([1])")
+        self.assertEqual(repr(Prime2(2).Vector([0, 1, 1, 0])), "Prime2().Vector([0, 1, 1, 0])")
+
+    def test_str(self):
+        self.assertEqual(str(Prime2()), "Prime2()")
+        self.assertEqual(str(Prime2(2)), "Prime2()")
+        self.assertEqual(str(Prime2(2).Vector([])), "[]")
+        self.assertEqual(str(Prime2(2).Vector([0])), "[0]")
+        self.assertEqual(str(Prime2(2).Vector([1])), "[1]")
+        self.assertEqual(str(Prime2(2).Vector([0, 1, 1, 0])), "[0110]")
+
+    def test_construct_vectors(self):
+        pp = Prime2()
+        v = pp.Vector([])
+        pp.Vector([0, 1, 1, 0])
+
+    def test_inverse(self):
+        pp = Prime2()
+        self.assertEqual(pp.inverse(0), None)
+        self.assertEqual(pp.inverse(1), 1)
+        with self.assertRaises(OverflowError): pp.inverse(2)
+        with self.assertRaises(OverflowError): pp.inverse(-1)
+
+    def test_vector_tolist(self):
+        pp = Prime2()
+        self.assertEqual(pp.Vector([]).tolist(), [])
+        self.assertEqual(pp.Vector([0, 1, 1, 0]).tolist(), [0, 1, 1, 0])
+        self.assertEqual(pp.Vector([1, 1, 0, 1]).tolist(), [1, 1, 0, 1])
+        self.assertEqual(pp.Vector([0, 1] * 100).tolist(), [0, 1] * 100)
+        self.assertEqual(pp.Vector([1, 0] * 100).tolist(), [1, 0] * 100)
+
+    def test_vector_equality(self):
+        pp = Prime2()
+        lists = [
+            [], [0], [1], [0, 0], [0, 1], [1, 0], [1, 1]
+        ] + [
+            [a] + [b]*1000 + [c]
+            for a in range(2) for b in range(2) for c in range(2)
+        ]
+        for v in lists:
+            self.assertEqual(pp.Vector(v).tolist(), v)
+            for w in lists:
+                self.assertEqual(pp.Vector(v) == pp.Vector(w), v == w)
+                self.assertEqual(pp.Vector(v) != pp.Vector(w), v != w)
+
+    def test_vector_tolist_random(self):
+        random.seed(0)
+        pp = Prime2()
+        for N in range(300):
+            data = [random.randrange(2) for _ in range(N)]
+            self.assertEqual(pp.Vector(data).tolist(), data)
+
+    def test_arithmetic(self):
+        pp = Prime2()
+        for N in [0, 1, 2, 20, 300]:
+            zero = pp.Vector([0] * (5*N))
+            A = pp.Vector([0, 1, 0, 1, 0] * N)
+            B = pp.Vector([0, 0, 1, 1, 0] * N)
+            C = pp.Vector([0, 1, 1, 0, 0] * N)
+            self.assertEqual(A + B, C)
+            self.assertEqual(A - B, C)
+            A2 = A.copy()
+            self.assertIsNot(A2, A)
+            self.assertEqual(A2, A)
+            A2 += B
+            self.assertEqual(A2, C)
+            A2 *= 1
+            self.assertEqual(A2, C)
+            A2 *= 0
+            self.assertEqual(A2, zero)
+
+    def test_shuffled_by_action(self):
+        pp = Prime2()
+        self.assertEqual(pp.Vector([0, 1]).shuffled_by_action(array(WORD, [0, 1])).tolist(), [0, 1])
+        self.assertEqual(pp.Vector([0, 1]).shuffled_by_action(array(WORD, [1, 0])).tolist(), [1, 0])
+        self.assertEqual(pp.Vector([1, 1]).shuffled_by_action(array(WORD, [1, 1])).tolist(), [0, 0])
+        self.assertEqual(pp.Vector([0, 0, 0, 1, 1, 1]).shuffled_by_action(array(WORD, [0, 2, 4, 1, 3, 5])).tolist(), [0, 1, 0, 1, 0, 1])
+        self.assertEqual(pp.Vector([0, 0, 0, 1, 1, 1]).shuffled_by_action(array(WORD, [0, 0, 0, 1, 1, 1])).tolist(), [0, 1, 0, 0, 0, 0])
+        self.assertEqual(pp.Vector([0, 0, 0, 1, 1, 1]).shuffled_by_action(array(WORD, [0, 0, 0, 1, 1, 1]), 3).tolist(), [0, 1, 0])
 
 
 if __name__ == "__main__":

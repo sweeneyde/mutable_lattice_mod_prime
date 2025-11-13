@@ -720,7 +720,7 @@ VectorModPrime_u8_subtract_multiple(PyObject *self, PyObject *const *args, Py_ss
     Py_RETURN_NONE;
 }
 
-PyObject *
+static PyObject *
 VectorModPrime_u8_repr(PyObject *self)
 {
     PyObject *tolist = VectorModPrime_u8_tolist(self, NULL);
@@ -806,6 +806,7 @@ VectorModPrime_u8_shuffled_by_action(PyObject *self, PyObject *const *args, Py_s
     }
     if (buf.itemsize != sizeof(Py_ssize_t)) {
         PyErr_SetString(PyExc_TypeError, "shuffled_by_action first argument must be buffer of pointer-sized integers");
+        PyBuffer_Release(&buf);
         return NULL;
     }
     Py_ssize_t *indexes = (Py_ssize_t *)buf.buf;
@@ -871,6 +872,9 @@ VectorModPrime_u8_copy(PyObject *self, PyObject *Py_UNUSED(ignored))
 {
     VectorModPrime_u8 *v = (VectorModPrime_u8 *)self;
     VectorModPrime_u8 *w = VectorModPrime_u8_zero_impl(v->p, Py_SIZE(v));
+    if (w == NULL) {
+        return NULL;
+    }
     memcpy(w->data, v->data, Py_SIZE(v)*sizeof(uint8_t));
     return (PyObject *)w;
 }
@@ -1991,12 +1995,536 @@ typedef struct {
 // TODO
 
 /*********************************************************************/
+/* Prime_u8                                                          */
+/*********************************************************************/
+
+static PyTypeObject Prime2_Type;
+
+typedef struct {
+    PyObject_HEAD
+    uint8_t p;
+} Prime2;
+
+static PyObject *
+Prime2_new(PyTypeObject *Py_UNUSED(type), PyObject *args, PyObject *kwds)
+{
+    if (kwds != NULL && PyDict_GET_SIZE(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError, "Prime2() takes no keyword arguments.");
+        return NULL;
+    }
+    if (PyTuple_GET_SIZE(args) > 1) {
+        PyErr_SetString(PyExc_TypeError, "Prime2() takes exactly one argument.");
+        return NULL;
+    }
+    if (PyTuple_GET_SIZE(args) == 1) {
+        PyObject *p_obj = PyTuple_GET_ITEM(args, 0);
+        long long p = PyLong_AsLongLong(p_obj);
+        if (p == -1 && PyErr_Occurred()) {
+            return NULL;
+        }
+        if (p != 2) {
+            PyErr_SetString(PyExc_OverflowError, "Prime2() argument was not 2");
+            return NULL;
+        }
+    }
+    Prime2 *self = (Prime2 *)PyType_GenericAlloc(&Prime2_Type, 0);
+    self->p = 2;
+    return (PyObject *)self;
+}
+
+static PyObject *
+Prime2_inverse(PyObject *Py_UNUSED(self), PyObject *other)
+{
+    long long x = PyLong_AsLongLong(other);
+    if (x == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (x < 0 || x >= 2) {
+        PyErr_SetString(PyExc_OverflowError, "argument exceeds the modulus");
+        return NULL;
+    }
+    if (x == 0) {
+        Py_RETURN_NONE;
+    }
+    return PyLong_FromLong(1);
+}
+
+static PyObject *
+Prime2_repr(PyObject *Py_UNUSED(self))
+{
+    return PyUnicode_FromStringAndSize("Prime2()", 8);
+}
+
+static PyObject *Prime2_Vector(PyObject *self, PyObject *arg);
+// static PyObject *Prime2_Lattice(PyObject *self, PyObject *args, PyObject *kwargs);
+// static PyObject *Prime2_Lattice_full(PyObject *self, PyObject *arg);
+// static PyObject *Prime2_relations_among(PyObject *self, PyObject *arg);
+
+static PyMethodDef Prime2_methods[] = {
+    {"inverse", Prime2_inverse, METH_O, "Prime(2).inverse(a) gets the multiplicative inverse of a modulo 2"},
+    {"Vector", Prime2_Vector, METH_O, "Prime(2).Vector([x0, ..., xn]) creates a Vector of Z/2Z values"},
+    // {"Lattice", (PyCFunction)(void(*)(void))Prime_u8_Lattice, METH_VARARGS | METH_KEYWORDS,
+    //     "Prime(2).Lattice(N, vectors, maxrank=-1) creates as space of vectors over Z/pZ"},
+    // {"Lattice_full", Prime2_Lattice_full, METH_O, "Prime(2).Lattice_Full(N) gives the entire space (Z/2Z)^N"},
+    // {"relations_among", Prime2_relations_among, METH_O,
+    //     "Prime(2).relations_among([v0, ..., vn]) gives the space of relations among the given vectors"},
+    {NULL, NULL, 0, NULL}
+};
+
+static PyMemberDef Prime2_members[] = {
+    {"p", Py_T_UBYTE, offsetof(Prime2, p), Py_READONLY, ""},
+    {NULL}
+};
+
+static PyTypeObject Prime2_Type = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "Prime2",
+    .tp_doc = PyDoc_STR("the prime number 2 and associated data"),
+    .tp_basicsize = sizeof(Prime_u8) - sizeof(uint8_t),
+    .tp_itemsize = sizeof(uint8_t),
+    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_new = Prime2_new,
+    .tp_methods = Prime2_methods,
+    .tp_members = Prime2_members,
+    .tp_str = Prime2_repr,
+    .tp_repr = Prime2_repr,
+};
+
+/*********************************************************************/
+/* Vector2                                                           */
+/*********************************************************************/
+
+static PyTypeObject VectorMod2_Type;
+
+typedef struct {
+    PyObject_VAR_HEAD
+    Py_ssize_t N;     // logical number of bits; Py_SIZE()
+    uint64_t datawords[1]; // bit j is stored at (datawords[j/64] >> (i % 64)) & 1
+} VectorMod2;
+
+static VectorMod2 *
+VectorMod2_zero_impl(Py_ssize_t N)
+{
+    Py_ssize_t words = (N + 63) / 64;
+    VectorMod2 *self = (VectorMod2 *)PyType_GenericAlloc(&VectorMod2_Type, words);
+    if (self == NULL) {
+        return NULL;
+    }
+    self->N = N;
+    return self;
+}
+
+static bool
+big_integer_mod2(PyObject *x_obj, int *dest)
+{
+    PyObject *one = PyLong_FromLong(1);
+    if (one == NULL) {
+        return true;
+    }
+    PyObject *rem = PyNumber_And(x_obj, one);
+    Py_DECREF(one);
+    if (rem == NULL) {
+        return true;
+    }
+    long long x = PyLong_AsLongLong(rem);
+    Py_DECREF(rem);
+    if (x == -1 && PyErr_Occurred()) {
+        return true;
+    }
+    if (x == 0 || x == 1) {
+        *dest = x;
+        return false;
+    }
+    PyErr_SetString(PyExc_OverflowError, "number & 1 was not 0 or 1");
+    return true;
+}
+
+static bool
+object_mod2(PyObject *x_obj, int *dest)
+{
+    int overflow;
+    long long x = PyLong_AsLongLongAndOverflow(x_obj, &overflow);
+    if (!overflow) {
+        if (x == -1 && PyErr_Occurred()) {
+            return true;
+        }
+        *dest = x & 1;
+        return false;
+    }
+    return big_integer_mod2(x_obj, dest);
+}
+
+static PyObject *
+Prime2_Vector(PyObject *Py_UNUSED(self), PyObject *arg)
+{
+    if (!PyList_CheckExact(arg)) {
+        PyErr_SetString(PyExc_TypeError, "Prime(2).Vector(a) argument must be list");
+        return NULL;
+    }
+    Py_ssize_t N = PyList_GET_SIZE(arg);
+    VectorMod2 *vec = VectorMod2_zero_impl(N);
+    if (vec == NULL) {
+        return NULL;
+    }
+    for (Py_ssize_t j = 0; j < N && j < PyList_GET_SIZE(arg); j++) {
+        PyObject *x_obj = Py_NewRef(PyList_GET_ITEM(arg, j));
+        int bit;
+        bool err = object_mod2(x_obj, &bit);
+        Py_DECREF(x_obj);
+        if (err) {
+            return NULL;
+        }
+        vec->datawords[j/64] |= ((uint64_t)bit) << (j % 64);
+    }
+    return (PyObject *)vec;
+}
+
+static PyObject *
+VectorMod2_tolist_impl(uint64_t *datawords, Py_ssize_t N)
+{
+    PyObject *result = PyList_New(N);
+    if (result == NULL) {
+        return NULL;
+    }
+    for (Py_ssize_t j = 0; j < N; j++) {
+        PyObject *x = PyLong_FromLong((datawords[j / 64] >> (j % 64)) & 1);
+        if (x == NULL) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        PyList_SET_ITEM(result, j, x);
+    }
+    return result;
+}
+
+static PyObject *
+VectorMod2_tolist(PyObject *self, PyObject *Py_UNUSED(other))
+{
+    assert(Py_TYPE(self) == &VectorMod2_Type);
+    VectorMod2 *vec = (VectorMod2 *)self;
+    return VectorMod2_tolist_impl(vec->datawords, vec->N);
+}
+
+static PyObject *
+VectorMod2_richcompare(PyObject *a, PyObject *b, int op)
+{
+    if (Py_TYPE(a) != &VectorMod2_Type || Py_TYPE(b) != &VectorMod2_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    if (op != Py_EQ && op != Py_NE) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorMod2 *avec = (VectorMod2 *)a;
+    VectorMod2 *bvec = (VectorMod2 *)b;
+    int equal = (
+        avec->N == bvec->N
+        && 0 == memcmp(avec->datawords, bvec->datawords, Py_SIZE(a)*sizeof(uint64_t))
+    );
+    return PyBool_FromLong(equal ^ (op == Py_NE));
+}
+
+static PyObject *
+VectorMod2_add(PyObject *a, PyObject *b)
+{
+    if (Py_TYPE(a) != &VectorMod2_Type || Py_TYPE(b) != &VectorMod2_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorMod2 *avec = (VectorMod2 *)a;
+    VectorMod2 *bvec = (VectorMod2 *)b;
+    if (avec->N != bvec->N) {
+        PyErr_SetString(PyExc_ValueError, "VectorMod2 length mismatch");
+        return NULL;
+    }
+    VectorMod2 *result = VectorMod2_zero_impl(avec->N);
+    Py_ssize_t size = Py_SIZE(avec);
+    for (Py_ssize_t j = 0; j < size; j++) {
+        result->datawords[j] = avec->datawords[j] ^ bvec->datawords[j];
+    }
+    return (PyObject *)result;
+}
+
+static PyObject *
+VectorMod2_iadd(PyObject *a, PyObject *b)
+{
+    if (Py_TYPE(a) != &VectorMod2_Type || Py_TYPE(b) != &VectorMod2_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorMod2 *avec = (VectorMod2 *)a;
+    VectorMod2 *bvec = (VectorMod2 *)b;
+    if (avec->N != bvec->N) {
+        PyErr_SetString(PyExc_ValueError, "VectorMod2 length mismatch");
+        return NULL;
+    }
+    Py_ssize_t size = Py_SIZE(avec);
+    for (Py_ssize_t j = 0; j < size; j++) {
+        avec->datawords[j] ^= bvec->datawords[j];
+    }
+    return Py_NewRef(a);
+}
+
+static PyObject *
+VectorMod2_mul(PyObject *a, PyObject *b)
+{
+    if (Py_TYPE(a) == &VectorMod2_Type && PyLong_CheckExact(b)) {
+        // don't swap
+    }
+    else if (Py_TYPE(b) == &VectorMod2_Type && PyLong_CheckExact(a)) {
+        // swap
+        PyObject *tmp = a; a = b; b = tmp;
+    }
+    else {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    VectorMod2 *vec = (VectorMod2 *)a;
+    int scalar;
+    if (object_mod2(b, &scalar)) {
+        return NULL;
+    }
+    VectorMod2 *result = VectorMod2_zero_impl(vec->N);
+    if (result == NULL) {
+        return NULL;
+    }
+    if (scalar) {
+        memcpy(result->datawords, vec->datawords, Py_SIZE(vec));
+    }
+    return (PyObject *)result;
+}
+
+static PyObject *
+VectorMod2_imul(PyObject *a, PyObject *b)
+{
+    assert(Py_TYPE(a) == &VectorMod2_Type);
+    VectorMod2 *vec = (VectorMod2 *)a;
+    int scalar;
+    if (object_mod2(b, &scalar)) {
+        return NULL;
+    }
+    if (!scalar) {
+        memset(vec->datawords, 0, Py_SIZE(vec)*sizeof(uint64_t));
+    }
+    return Py_NewRef(a);
+}
+
+static PyObject *
+VectorMod2_copy_impl(PyObject *self)
+{
+    VectorMod2 *v = (VectorMod2 *)self;
+    VectorMod2 *w = VectorMod2_zero_impl(v->N);
+    if (w == NULL) {
+        return NULL;
+    }
+    memcpy(w->datawords, v->datawords, Py_SIZE(v)*sizeof(uint64_t));
+    return (PyObject *)w;
+}
+
+static PyObject *
+VectorMod2_copy(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    return VectorMod2_copy_impl(self);
+}
+
+static Py_ssize_t
+VectorMod2_length(PyObject *self)
+{
+    return ((VectorMod2 *)self)->N;
+}
+
+static PyObject *
+VectorMod2_sq_item(PyObject *self, Py_ssize_t j)
+{
+    VectorMod2 *v = (VectorMod2 *)self;
+    Py_ssize_t N = v->N;
+    if (!(0 <= j && j < N)) {
+        PyErr_SetString(PyExc_IndexError, "Vector index out of range");
+        return NULL;
+    }
+    return PyLong_FromLong((v->datawords[j/64] >> (j % 64)) & 1);
+}
+
+static int
+VectorMod2_sq_ass_item(PyObject *self, Py_ssize_t j, PyObject *xo)
+{
+    Py_ssize_t N = Py_SIZE(self);
+    if (!(0 <= j && j < N)) {
+        PyErr_SetString(PyExc_IndexError, "Vector index out of range");
+        return -1;
+    }
+    VectorMod2 *v = (VectorMod2 *)self;
+    int bit;
+    if (object_mod2(xo, &bit)) {
+        return -1;
+    }
+    uint64_t test = ((uint64_t)1) << (j % 64);
+    if (bit) {
+        v->datawords[j/64] |= test;
+    }
+    else {
+        v->datawords[j/64] &= ~test;
+    }
+    return 0;
+}
+
+PyObject *
+VectorMod2_shuffled_by_action(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    assert(Py_TYPE(self) == &VectorMod2_Type);
+    VectorMod2 *vec = (VectorMod2 *)self;
+    Py_ssize_t result_length;
+    if (nargs == 1) {
+        result_length = vec->N;
+    }
+    else if (nargs == 2) {
+        if (!PyLong_CheckExact(args[1])) {
+            PyErr_SetString(PyExc_TypeError, "shuffled_by_action second argument must be int");
+            return NULL;
+        }
+        result_length = PyLong_AsSsize_t(args[1]);
+        if (result_length == -1 && PyErr_Occurred()) {
+            return NULL;
+        }
+    }
+    else {
+        PyErr_SetString(PyExc_TypeError, "shuffled_by_action takes two arguments");
+        return NULL;
+    }
+    Py_buffer buf;
+    if (PyObject_GetBuffer(args[0], &buf, PyBUF_SIMPLE) < 0) {
+        return NULL;
+    }
+    if (buf.itemsize != sizeof(Py_ssize_t)) {
+        PyErr_SetString(PyExc_TypeError, "shuffled_by_action first argument must be buffer of pointer-sized integers");
+        PyBuffer_Release(&buf);
+        return NULL;
+    }
+    Py_ssize_t *indexes = (Py_ssize_t *)buf.buf;
+    assert(buf.ndim == 1);
+    Py_ssize_t N = buf.len / sizeof(Py_ssize_t);
+    if (N != vec->N) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in shuffled_by_action");
+        PyBuffer_Release(&buf);
+        return NULL;
+    }
+    VectorMod2 *result = VectorMod2_zero_impl(result_length);
+    if (result == NULL) {
+        PyBuffer_Release(&buf);
+        return NULL;
+    }
+    for (Py_ssize_t j = 0; j < N; j++) {
+        Py_ssize_t aj = indexes[j];
+        if (aj < 0 || aj >= result_length) {
+            PyErr_SetString(PyExc_IndexError, "shuffled_by_action out of bounds");
+            PyBuffer_Release(&buf);
+            return NULL;
+        }
+        uint64_t bit = (vec->datawords[j / 64] >> (j % 64)) & 1;
+        result->datawords[aj / 64] ^= bit << (aj % 64);
+    }
+    PyBuffer_Release(&buf);
+    return (PyObject *)result;
+}
+
+static PyMethodDef VectorMod2_methods[] = {
+    {"tolist", VectorMod2_tolist, METH_NOARGS, "v.tolist() returns a list of inte representing v"},
+    {"copy", VectorMod2_copy, METH_NOARGS, "v.copy() makes a new copy of the Vector v"},
+    {"shuffled_by_action", (PyCFunction)(void(*)(void))VectorMod2_shuffled_by_action,
+        METH_FASTCALL, "v.shuffled_by_action(a) does for each i: result[a[i]] += v[i]"},
+    {NULL, NULL, 0, NULL}
+};
+
+static PyObject *
+VectorMod2_repr(PyObject *self)
+{
+    PyObject *tolist = VectorMod2_tolist(self, NULL);
+    if (tolist == NULL) {
+        return NULL;
+    }
+    PyObject *result = PyUnicode_FromFormat("Prime2().Vector(%R)", tolist);
+    Py_DECREF(tolist);
+    return result;
+}
+
+static void
+VectorMod2_str_impl(uint64_t *datawords, Py_ssize_t N, char *buf)
+{
+    char *dest = buf;
+    *dest++ = '[';
+    for (Py_ssize_t j = 0; j < N; j++) {
+        int bit = (datawords[j / 64] >> (j % 64)) & 1;
+        *dest++ = '0' + bit;
+    }
+    *dest++ = ']';
+    assert(dest - buf == 2 + N);
+}
+
+PyObject *
+VectorMod2_str(PyObject *self)
+{
+    VectorMod2 *vec = (VectorMod2 *)self;
+    Py_ssize_t result_size = 2 + vec->N;
+    char *buf = PyMem_Malloc(result_size);
+    if (buf == NULL) {
+        return PyErr_NoMemory();
+    }
+    VectorMod2_str_impl(vec->datawords, vec->N, buf);
+    PyObject *result = PyUnicode_FromStringAndSize(buf, result_size);
+    PyMem_Free(buf);
+    return result;
+}
+
+// TODO: have v.p return 2
+
+static PySequenceMethods VectorMod2_as_sequence = {
+    .sq_length = VectorMod2_length,
+    .sq_item = VectorMod2_sq_item,
+    .sq_ass_item = VectorMod2_sq_ass_item,
+};
+
+static PyNumberMethods VectorMod2_as_number = {
+    .nb_add = VectorMod2_add,
+    .nb_subtract = VectorMod2_add,
+    .nb_multiply = VectorMod2_mul,
+    .nb_negative = VectorMod2_copy_impl,
+    .nb_inplace_add = VectorMod2_iadd,
+    .nb_inplace_subtract = VectorMod2_iadd,
+    .nb_inplace_multiply = VectorMod2_imul,
+};
+
+static PyTypeObject VectorMod2_Type = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "VectorMod2",
+    .tp_doc = PyDoc_STR("A vector of Z/2Z values"),
+    .tp_basicsize = sizeof(VectorMod2) - sizeof(uint64_t),
+    .tp_itemsize = sizeof(uint64_t),
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    .tp_methods = VectorMod2_methods,
+    // .tp_members = VectorMod2_members,
+    .tp_as_number = &VectorMod2_as_number,
+    .tp_richcompare = VectorMod2_richcompare,
+    .tp_str = VectorMod2_str,
+    .tp_repr = VectorMod2_repr,
+    .tp_as_sequence = &VectorMod2_as_sequence,
+};
+
+
+/*********************************************************************/
 /* Module stuff                                                      */
 /*********************************************************************/
 
 static int
 mutable_lattice_module_exec(PyObject *m)
 {
+    if (PyType_Ready(&Prime2_Type) < 0) {
+        return -1;
+    }
+    if (PyModule_AddObjectRef(m, "Prime2", (PyObject *)&Prime2_Type) < 0) {
+        return -1;
+    }
+    if (PyType_Ready(&VectorMod2_Type) < 0) {
+        return -1;
+    }
+    if (PyModule_AddObjectRef(m, "VectorMod2", (PyObject *)&VectorMod2_Type) < 0) {
+        return -1;
+    }
     if (PyType_Ready(&Prime_u8_Type) < 0) {
         return -1;
     }
