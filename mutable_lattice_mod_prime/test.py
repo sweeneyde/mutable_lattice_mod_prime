@@ -511,7 +511,7 @@ class Test_Lattice_u8(unittest.TestCase):
         p = 5
         pp = Prime_u8(p)
         for N in [0, 1, 2, 3, 4, 5, 10, 20]:
-            for _ in range(20):
+            for _ in range(200):
                 mod = pp.Lattice(N)
                 vecs = [
                     pp.Vector([random.randrange(p) for _ in range(N)])
@@ -820,6 +820,10 @@ class Test_Mod2(unittest.TestCase):
             C = pp.Vector([0, 1, 1, 0, 0] * N)
             self.assertEqual(A + B, C)
             self.assertEqual(A - B, C)
+            self.assertEqual(A*0, zero)
+            self.assertEqual(A*1, A)
+            self.assertEqual(A*2, zero)
+            self.assertEqual(A*3, A)
             A2 = A.copy()
             self.assertIsNot(A2, A)
             self.assertEqual(A2, A)
@@ -839,6 +843,163 @@ class Test_Mod2(unittest.TestCase):
         self.assertEqual(pp.Vector([0, 0, 0, 1, 1, 1]).shuffled_by_action(array(WORD, [0, 0, 0, 1, 1, 1])).tolist(), [0, 1, 0, 0, 0, 0])
         self.assertEqual(pp.Vector([0, 0, 0, 1, 1, 1]).shuffled_by_action(array(WORD, [0, 0, 0, 1, 1, 1]), 3).tolist(), [0, 1, 0])
 
+class TestLatticeMod2(unittest.TestCase):
+    def test_construct_Lattice(self):
+        pp = Prime2()
+        pp.Lattice(3)
+        pp.Lattice(3, [])
+        pp.Lattice(3, [[2, 1, 1]])
+        pp.Lattice(3, maxrank=1)
+        pp.Lattice(3, [[0, 1, 2], [1, 0, 0]], maxrank=-1)
+
+    def test_tolist(self):
+        pp = Prime2()
+        self.assertEqual(pp.Lattice(3).tolist(), [])
+        self.assertEqual(pp.Lattice(3, []).tolist(), [])
+        self.assertEqual(pp.Lattice(3, [[0, 1, 1]]).tolist(), [[0, 1, 1]])
+        self.assertEqual(pp.Lattice(3, [[1, 0, 0], [0, 1, 1]]).tolist(), [[1, 0, 0], [0, 1, 1]])
+
+    def test_get_basis(self):
+        pp = Prime2()
+        self.assertEqual(pp.Lattice(3).get_basis(), [])
+        self.assertEqual(pp.Lattice(3, []).get_basis(), [])
+        self.assertEqual(pp.Lattice(3, [[0, 1, 1]]).get_basis(), [pp.Vector([0, 1, 1])])
+        self.assertEqual(pp.Lattice(3, [[1, 0, 0], [0, 1, 1]]).get_basis(), [pp.Vector([1, 0, 0]), pp.Vector([0, 1, 1])])
+
+    def test_full(self):
+        pp = Prime2()
+        self.assertEqual(pp.Lattice_full(0).tolist(), [])
+        self.assertEqual(pp.Lattice_full(1).tolist(), [[1]])
+        self.assertEqual(pp.Lattice_full(2).tolist(), [[1, 0], [0, 1]])
+        self.assertEqual(pp.Lattice_full(3).tolist(), [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+
+    def test_maxrank(self):
+        pp = Prime2()
+        L = pp.Lattice(8, [[1]*8], maxrank=2)
+        self.assertEqual(L.maxrank, 2)
+        self.assertEqual(L.rank, 1)
+        L.add_vector(pp.Vector([0, 0, 0, 0, 1, 1, 1, 1]))
+        self.assertEqual(L.rank, 2)
+        L.add_vector(pp.Vector([1, 1, 1, 1, 0, 0, 0, 0]))
+        self.assertEqual(L.rank, 2)
+        with self.assertRaises(IndexError):
+            L.add_vector(pp.Vector([0, 1, 0, 0, 0, 0, 0, 0]))
+
+    def test_row_echelon(self):
+        pp = Prime2()
+        self.assertEqual(pp.Lattice(3, [[1, 1, 1], [1, 1, 1]]).tolist(), [[1, 1, 1]])
+        self.assertEqual(pp.Lattice(3, [[1, 1, 1], [1, 1, 0]]).tolist(), [[1, 1, 1], [0, 0, 1]])
+        self.assertEqual(pp.Lattice(0, [[], [], []]).tolist(), [])
+        self.assertEqual(pp.Lattice(1, []).tolist(), [])
+        self.assertEqual(pp.Lattice(1, [[0]]).tolist(), [])
+        self.assertEqual(pp.Lattice(1, [[1]]).tolist(), [[1]])
+        self.assertEqual(pp.Lattice(1, [[1], [1]]).tolist(), [[1]])
+        self.assertEqual(pp.Lattice(2, []).tolist(), [])
+        self.assertEqual(pp.Lattice(2, [[0, 0]]).tolist(), [])
+        self.assertEqual(pp.Lattice(2, [[1, 0]]).tolist(), [[1, 0]])
+        self.assertEqual(pp.Lattice(2, [[1, 1]]).tolist(), [[1, 1]])
+        self.assertEqual(pp.Lattice(2, [[0, 1]]).tolist(), [[0, 1]])
+        self.assertEqual(pp.Lattice(2, [[0, 0], [1, 0]]).tolist(), [[1, 0]])
+        self.assertEqual(pp.Lattice(2, [[1, 0], [0, 1]]).tolist(), [[1, 0], [0, 1]])
+        self.assertEqual(pp.Lattice(2, [[1, 1], [1, 0]]).tolist(), [[1, 1], [0, 1]])
+        self.assertEqual(pp.Lattice(2, [[0, 1], [1, 1]]).tolist(), [[1, 1], [0, 1]])
+
+    def test_add_vector(self):
+        pp = Prime2()
+        L = pp.Lattice(4)
+        self.assertEqual(L.tolist(), [])
+        L.add_vector(pp.Vector([0, 0, 0, 1]))
+        self.assertEqual(L.tolist(), [[0, 0, 0, 1]])
+        L.add_vector(pp.Vector([0, 1, 1, 1]))
+        self.assertEqual(L.tolist(), [[0, 1, 1, 1], [0, 0, 0, 1]])
+        L.add_vector(pp.Vector([1, 1, 1, 1]))
+        self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 0, 1]])
+        L.add_vector(pp.Vector([0, 0, 1, 1]))
+        self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 1, 1], [0, 0, 0, 1]])
+        L.add_vector(pp.Vector([0, 1, 0, 1]))
+        self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 1, 1], [0, 0, 0, 1]])
+
+    def test_copy(self):
+        pp = Prime2()
+        L = pp.Lattice(4, [[0, 1, 1, 1]])
+        L2 = L.copy()
+        self.assertEqual(L.tolist(), [[0, 1, 1, 1]])
+        self.assertEqual(L2.tolist(), [[0, 1, 1, 1]])
+        L2.add_vector(pp.Vector([0, 0, 1, 1]))
+        self.assertEqual(L.tolist(), [[0, 1, 1, 1]])
+        self.assertEqual(L2.tolist(), [[0, 1, 1, 1], [0, 0, 1, 1]])
+
+    def test_reduce(self):
+        pp = Prime2()
+        L = pp.Lattice(4, [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 0, 1]])
+        self.assertEqual(L.tolist(), [[1, 1, 1, 1], [0, 1, 1, 1], [0, 0, 0, 1]])
+        L.reduce()
+        self.assertEqual(L.tolist(), [[1, 0, 0, 0], [0, 1, 1, 0], [0, 0, 0, 1]])
+
+    def test_comparison_exhaustive(self):
+        pp = Prime2()
+        # get all row echelon forms
+        vectors = list(map(list, itertools.product(range(2), repeat=4)))
+        del vectors[0]
+        pairs = [[u, v] for u, v in itertools.combinations(vectors, 2) if u.index(1) < v.index(1)]
+        triples = [[u, v, w] for u, v in pairs for w in vectors if v.index(1) < w.index(1)]
+        spaces = (
+            [pp.Lattice(4)]
+            + [pp.Lattice(4, [v]) for v in vectors]
+            + [pp.Lattice(4, pair) for pair in pairs]
+            + [pp.Lattice(4, triple) for triple in triples]
+        )
+        for a in spaces:
+            for b in spaces:
+                a_in_b = all(map(b.__contains__, a.get_basis()))
+                b_in_a = all(map(a.__contains__, b.get_basis()))
+                self.assertEqual(a == b, a_in_b and b_in_a)
+                self.assertEqual(a != b, not (a_in_b and b_in_a))
+                self.assertEqual(a <= b, a_in_b)
+                self.assertEqual(a < b, a_in_b and not b_in_a)
+                self.assertEqual(a >= b, b_in_a)
+                self.assertEqual(a > b, b_in_a and not a_in_b)
+
+    def test_random(self):
+        random.seed(123)
+        pp = Prime2()
+        for N in [0, 1, 2, 3, 4, 5, 10, 20]:
+            for _ in range(20):
+                mod = pp.Lattice(N)
+                vecs = [
+                    pp.Vector([random.randrange(2) for _ in range(N)])
+                    for _ in range(random.randrange(N + 2))
+                ]
+                zero = pp.Vector([0] * N)
+                vec0 = vecs[0] if vecs else zero
+                for vec in vecs:
+                    mod.add_vector(vec)
+                    self.assertIn(vec, mod)
+                    self.assertIn(zero-vec, mod)
+                    self.assertIn(3*vec, mod)
+                    self.assertIn(vec0 + vec, mod)
+                    self.assertIn(3*vec0-4*vec, mod)
+
+                copy = mod.copy()
+                copy.reduce()
+                self.assertEqual(copy, mod)
+
+                lin_combo = pp.Vector([0] * N)
+                for vec in vecs:
+                    lin_combo += random.randrange(2) * vec
+                self.assertIn(lin_combo, mod)
+
+                basis = mod.get_basis()
+                for to_remove in basis:
+                    submod = pp.Lattice(N)
+                    for vec in basis:
+                        if vec != to_remove:
+                            submod.add_vector(vec)
+                    self.assertNotIn(to_remove, submod)
+                    also_outside = to_remove
+                    for vec in submod.get_basis():
+                        also_outside += random.randrange(2) * vec
+                    self.assertNotIn(also_outside, submod)
 
 if __name__ == "__main__":
     unittest.main()

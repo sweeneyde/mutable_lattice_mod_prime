@@ -1400,7 +1400,7 @@ Lattice_u8_subset(Lattice_u8 *a, Lattice_u8 *b)
 }
 
 static PyObject *
-Lattice_richcompare(PyObject *a, PyObject *b, int op)
+Lattice_u8_richcompare(PyObject *a, PyObject *b, int op)
 {
     if (Py_TYPE(a) != &Lattice_u8_Type || Py_TYPE(b) != &Lattice_u8_Type) {
         Py_RETURN_NOTIMPLEMENTED;
@@ -1873,7 +1873,7 @@ static PyTypeObject Lattice_u8_Type = {
     .tp_methods = Lattice_u8_methods,
     .tp_members = Lattice_u8_members,
     .tp_as_sequence = &Lattice_u8_as_sequence,
-    .tp_richcompare = Lattice_richcompare,
+    .tp_richcompare = Lattice_u8_richcompare,
     .tp_repr = Lattice_u8_repr,
     .tp_str = Lattice_u8_str,
 };
@@ -2056,16 +2056,16 @@ Prime2_repr(PyObject *Py_UNUSED(self))
 }
 
 static PyObject *Prime2_Vector(PyObject *self, PyObject *arg);
-// static PyObject *Prime2_Lattice(PyObject *self, PyObject *args, PyObject *kwargs);
-// static PyObject *Prime2_Lattice_full(PyObject *self, PyObject *arg);
+static PyObject *Prime2_Lattice(PyObject *self, PyObject *args, PyObject *kwargs);
+static PyObject *Prime2_Lattice_full(PyObject *self, PyObject *arg);
 // static PyObject *Prime2_relations_among(PyObject *self, PyObject *arg);
 
 static PyMethodDef Prime2_methods[] = {
     {"inverse", Prime2_inverse, METH_O, "Prime(2).inverse(a) gets the multiplicative inverse of a modulo 2"},
     {"Vector", Prime2_Vector, METH_O, "Prime(2).Vector([x0, ..., xn]) creates a Vector of Z/2Z values"},
-    // {"Lattice", (PyCFunction)(void(*)(void))Prime_u8_Lattice, METH_VARARGS | METH_KEYWORDS,
-    //     "Prime(2).Lattice(N, vectors, maxrank=-1) creates as space of vectors over Z/pZ"},
-    // {"Lattice_full", Prime2_Lattice_full, METH_O, "Prime(2).Lattice_Full(N) gives the entire space (Z/2Z)^N"},
+    {"Lattice", (PyCFunction)(void(*)(void))Prime2_Lattice, METH_VARARGS | METH_KEYWORDS,
+        "Prime(2).Lattice(N, vectors, maxrank=-1) creates as space of vectors over Z/pZ"},
+    {"Lattice_full", Prime2_Lattice_full, METH_O, "Prime(2).Lattice_Full(N) gives the entire space (Z/2Z)^N"},
     // {"relations_among", Prime2_relations_among, METH_O,
     //     "Prime(2).relations_among([v0, ..., vn]) gives the space of relations among the given vectors"},
     {NULL, NULL, 0, NULL}
@@ -2243,6 +2243,14 @@ VectorMod2_add(PyObject *a, PyObject *b)
     return (PyObject *)result;
 }
 
+static inline void
+VectorMod2_iadd_impl(uint64_t *a, uint64_t *b, Py_ssize_t num_words)
+{
+    for (Py_ssize_t j = 0; j < num_words; j++) {
+        a[j] ^= b[j];
+    }
+}
+
 static PyObject *
 VectorMod2_iadd(PyObject *a, PyObject *b)
 {
@@ -2255,10 +2263,7 @@ VectorMod2_iadd(PyObject *a, PyObject *b)
         PyErr_SetString(PyExc_ValueError, "VectorMod2 length mismatch");
         return NULL;
     }
-    Py_ssize_t size = Py_SIZE(avec);
-    for (Py_ssize_t j = 0; j < size; j++) {
-        avec->datawords[j] ^= bvec->datawords[j];
-    }
+    VectorMod2_iadd_impl(avec->datawords, bvec->datawords, Py_SIZE(avec));
     return Py_NewRef(a);
 }
 
@@ -2285,7 +2290,7 @@ VectorMod2_mul(PyObject *a, PyObject *b)
         return NULL;
     }
     if (scalar) {
-        memcpy(result->datawords, vec->datawords, Py_SIZE(vec));
+        memcpy(result->datawords, vec->datawords, Py_SIZE(vec)*sizeof(uint64_t));
     }
     return (PyObject *)result;
 }
@@ -2505,6 +2510,540 @@ static PyTypeObject VectorMod2_Type = {
     .tp_as_sequence = &VectorMod2_as_sequence,
 };
 
+/*********************************************************************/
+/* LatticeMod2                                                       */
+/*********************************************************************/
+
+static PyTypeObject LatticeMod2_Type;
+
+typedef struct {
+    PyObject_VAR_HEAD
+    Py_ssize_t N; // The ambient dimension; we're a sublattice of Z/2 ^ N
+    Py_ssize_t N_words; // ceil(N/64)
+    Py_ssize_t rank; // The number of basis vectors
+    Py_ssize_t maxrank; // How many vectors we have space for
+    uint64_t *zero_columns_mask;
+    Py_ssize_t *col_to_pivot; // length=N. -1 if no pivot
+    Py_ssize_t *row_to_pivot; // logical length=rank. Every row has a pivot.
+    uint64_t *data; // Space for (maxrank+1)*N uint64_t
+    uint64_t *basis[1]; // space for N Pointer-to-uint64_t
+    // The data hangs off the end of this struct.
+    // Format:
+    //    * The struct members leading up to L.basis
+    //    * Then L.basis[N] (so we can shuffle rows around)
+    //    * then space for 3*N*Py_ssize_t arrays above
+    //    * then space for (maxrank+1)*N uint8_t, pointed to by the above.
+    // Technically we don't need to store all of the pointers above
+    // and could recalculate, but I don't think we'll be starved
+    // by this constant space overhead.
+} LatticeMod2;
+
+static inline uint64_t
+GETBIT(uint64_t *row, Py_ssize_t j)
+{
+    return (row[j / 64] >> (j % 64)) & 1;
+}
+
+static uint64_t *
+LatticeMod2_push_vector(LatticeMod2 *L, uint64_t *vecwords)
+{
+    assert(L->rank <= L->maxrank);
+    uint64_t *data = L->data + L->N_words * L->rank;
+    memcpy(data, vecwords, L->N_words * sizeof(uint64_t));
+    return data;
+}
+
+static LatticeMod2 *
+LatticeMod2_new_impl(Py_ssize_t N, Py_ssize_t maxrank)
+{
+    if (N < 0) {
+        PyErr_SetString(PyExc_ValueError, "Lattice(N) argument must be nonnegative");
+        return NULL;
+    }
+    if (maxrank < -1) {
+        PyErr_SetString(PyExc_ValueError, "maxrank must be >= -1");
+        return NULL;
+    }
+    if (maxrank == -1 || maxrank > N) {
+        maxrank = N;
+    }
+    Py_ssize_t N_words = (N + 63) / 64;
+    // We need:
+    //   3*N words for the Py_ssize_t data
+    // + N words for the basis
+    // + N_words*(maxrank + 1) words for the buffers
+    // == 4*N*sizeof(Py_ssize_t) + N_words*(maxrank + 1)*sizeof(uint64_t)
+    // <= (4*N + N_words*(maxrank + 1)) * sizeof(uint64_t)
+    static_assert(sizeof(Py_ssize_t) <= sizeof(uint64_t));
+    static_assert(sizeof(void *) <= sizeof(uint64_t));
+    static_assert(_Alignof(void *) <= _Alignof(uint64_t));
+    if (N_words > PY_SSIZE_T_MAX / (maxrank + 1) || N > PY_SSIZE_T_MAX / 4) {
+        PyErr_SetString(PyExc_OverflowError, "Lattice was too big to construct");
+        return NULL;
+    }
+    Py_ssize_t num_words = 4*N + N_words*(maxrank + 1);
+    if (num_words < 0) {
+        PyErr_SetString(PyExc_OverflowError, "Lattice was too big to construct");
+        return NULL;
+    }
+    LatticeMod2 *L = (LatticeMod2 *)PyType_GenericAlloc(&LatticeMod2_Type, num_words);
+    if (!L) {
+        return NULL;
+    }
+    uint64_t **buffer = (uint64_t **)L->basis;
+    uint64_t *zero_columns_mask = (uint64_t *)&buffer[N];
+    Py_ssize_t *col_to_pivot = (Py_ssize_t *)&buffer[2*N];
+    Py_ssize_t *row_to_pivot = (Py_ssize_t *)&buffer[3*N];
+    uint64_t *data = (uint64_t *)&buffer[4*N];
+    assert(data[N_words*(maxrank+1)-1] == 0);
+    L->N = N;
+    L->N_words = N_words;
+    L->maxrank = maxrank;
+    L->rank = 0;
+    for (Py_ssize_t j = 0; j < N; j++) {
+        col_to_pivot[j] = -1;
+    }
+    memset(zero_columns_mask, -1, N_words*sizeof(uint64_t));
+    L->zero_columns_mask = zero_columns_mask;
+    L->row_to_pivot = row_to_pivot;
+    L->col_to_pivot = col_to_pivot;
+    L->data = data;
+    return L;
+}
+
+static PyObject *
+LatticeMod2_copy(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    LatticeMod2 *L = (LatticeMod2 *)self;
+    LatticeMod2 *L2 = LatticeMod2_new_impl(L->N, L->maxrank);
+    if (L2 == NULL) {
+        return NULL;
+    }
+    L2->rank = L->rank;
+    memcpy(L2->zero_columns_mask, L->zero_columns_mask, L->N_words*sizeof(uint64_t));
+    memcpy(L2->row_to_pivot, L->row_to_pivot, L->rank*sizeof(Py_ssize_t));
+    memcpy(L2->col_to_pivot, L->col_to_pivot, L->N*sizeof(Py_ssize_t));
+    for (Py_ssize_t i = 0; i < L->rank; i++) {
+        L2->basis[i] = L2->data + (i * L->N_words);
+        memcpy(L2->basis[i], L->basis[i], L->N_words*sizeof(uint64_t));
+        assert(GETBIT(L2->basis[i], L2->row_to_pivot[i]) == 1);
+    }
+    return (PyObject *)L2;
+}
+
+static bool
+LatticeMod2_add_vector_or_list_impl(PyObject *self, PyObject *other);
+
+static PyObject *
+Prime2_Lattice(PyObject *Py_UNUSED(p2), PyObject *args, PyObject *kwargs)
+{
+    static char *kwlist[] = {"", "", "maxrank", NULL};
+    Py_ssize_t N;
+    PyObject *data = NULL;
+    Py_ssize_t maxrank = -1;
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "n|O$n", kwlist, &N, &data, &maxrank)) {
+        return NULL;
+    }
+    PyObject *result = (PyObject *)LatticeMod2_new_impl(N, maxrank);
+    if (result == NULL) {
+        return NULL;
+    }
+    if (data == NULL) {
+        return result;
+    }
+    if (!PyList_Check(data)) {
+        PyErr_SetString(PyExc_TypeError, "Lattice(N, data) second argument must be list");
+        Py_DECREF(result);
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < PyList_GET_SIZE(data); i++) {
+        if (LatticeMod2_add_vector_or_list_impl(result, PyList_GET_ITEM(data, i))) {
+            Py_DECREF(result);
+            return NULL;
+        }
+    }
+    return result;
+}
+
+static PyObject *
+Prime2_Lattice_full(PyObject *Py_UNUSED(p2), PyObject *arg)
+{
+    if (!PyLong_CheckExact(arg)) {
+        PyErr_SetString(PyExc_TypeError, "Lattice_full(N) argument must be int");
+        return NULL;
+    }
+    Py_ssize_t N = PyLong_AsSsize_t(arg);
+    if (N == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    if (N < 0) {
+        PyErr_SetString(PyExc_ValueError, "Lattice_full(N) argument cannot be negative");
+        return NULL;
+    }
+    LatticeMod2 *result = LatticeMod2_new_impl(N, N);
+    if (result == NULL) {
+        return NULL;
+    }
+    memset(result->zero_columns_mask, 0, result->N_words*sizeof(uint64_t));
+    Py_ssize_t N_words = result->N_words;
+    for (Py_ssize_t i = 0; i < N; i++) {
+        result->col_to_pivot[i] = i;
+        result->row_to_pivot[i] = i;
+        uint64_t *row = &result->data[i*N_words];
+        row[i / 64] = (uint64_t)1 << (i % 64);
+        result->basis[i] = row;
+    }
+    result->rank = N;
+    return (PyObject *)result;
+}
+
+static PyObject *
+LatticeMod2_get_basis(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    assert(Py_TYPE(self) == &LatticeMod2_Type);
+    LatticeMod2 *L = (LatticeMod2 *)self;
+    Py_ssize_t N = L->N;
+    Py_ssize_t N_words = L->N_words;
+    Py_ssize_t R = L->rank;
+    PyObject *result = PyList_New(R);
+    if (result == NULL) {
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < R; i++) {
+        VectorMod2 *v = VectorMod2_zero_impl(N);
+        if (v == NULL) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        memcpy(v->datawords, L->basis[i], N_words*sizeof(uint64_t));
+        PyList_SET_ITEM(result, i, v);
+    }
+    return result;
+}
+
+static PyObject *
+LatticeMod2_tolist(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    assert(Py_TYPE(self) == &LatticeMod2_Type);
+    LatticeMod2 *L = (LatticeMod2 *)self;
+    Py_ssize_t N = L->N;
+    Py_ssize_t R = L->rank;
+    PyObject *result = PyList_New(R);
+    if (result == NULL) {
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < R; i++) {
+        PyObject *v = VectorMod2_tolist_impl(L->basis[i], N);
+        if (v == NULL) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        PyList_SET_ITEM(result, i, v);
+    }
+    return result;
+}
+
+static void
+LatticeMod2_insert_vector_with_pivot(LatticeMod2 *L, uint64_t *vecwords, Py_ssize_t j)
+{
+    assert(vecwords == L->data + L->N_words * L->rank);
+    Py_ssize_t R = L->rank;
+    Py_ssize_t *row_to_pivot = L->row_to_pivot;
+    Py_ssize_t *col_to_pivot = L->col_to_pivot;
+    uint64_t **basis = L->basis;
+    Py_ssize_t where = bisect_left(L->row_to_pivot, 0, R, j);
+    assert(0 <= where && where <= R);
+    assert(where == 0 || row_to_pivot[where - 1] < j);
+    assert(where == R || row_to_pivot[where] > j);
+    L->rank = R + 1;
+    assert(L->rank <= L->N);
+    for (Py_ssize_t i = R; i > where; i--) {
+        basis[i] = basis[i - 1];
+        row_to_pivot[i] = row_to_pivot[i - 1];
+        assert(col_to_pivot[row_to_pivot[i]] == i - 1);
+        col_to_pivot[row_to_pivot[i]] = i;
+    }
+    basis[where] = vecwords;
+    row_to_pivot[where] = j;
+    col_to_pivot[j] = where;
+    Py_ssize_t N_words = L->N_words;
+    uint64_t *zero_columns_mask = L->zero_columns_mask;
+    for (Py_ssize_t J = 0; J < N_words; J++) {
+        zero_columns_mask[J] &= ~vecwords[J];
+    }
+}
+
+static bool
+LatticeMod2_add_vector_impl(LatticeMod2 *L, uint64_t *vecwords)
+{
+    Py_ssize_t N = L->N;
+    Py_ssize_t N_words = L->N_words;
+    if (L->rank == N) {
+        return false;
+    }
+    vecwords = LatticeMod2_push_vector(L, vecwords);
+    for (Py_ssize_t J = 0; J < N_words; J++) {
+        uint64_t word = vecwords[J];
+        Py_ssize_t *c2p = &L->col_to_pivot[J*64];
+        for (Py_ssize_t j = 0; j < 64; j++) {
+            assert(((word>>j) & 1) == GETBIT(vecwords, J*64+j));
+            if (((word >> j) & 1) == 0) {
+                continue;
+            }
+            Py_ssize_t i = c2p[j];
+            if (i != -1) {
+                uint64_t *row = L->basis[i];
+                assert(GETBIT(row, J*64+j) == 1);
+                VectorMod2_iadd_impl(&vecwords[J], &row[J], N_words - J);
+                assert(GETBIT(vecwords, J*64+j) == 0);
+                word = vecwords[J];
+                continue;
+            }
+            if (L->rank == L->maxrank) {
+                PyErr_SetString(PyExc_IndexError, "Lattice rank would exceed maxrank");
+                return true;
+            }
+            // Found a place to put this vector
+            LatticeMod2_insert_vector_with_pivot(L, vecwords, j);
+            return false;
+        }
+    }
+    // already present
+    return false;
+}
+
+static PyObject *
+LatticeMod2_add_vector(PyObject *self, PyObject *other)
+{
+    assert(Py_TYPE(self) == &LatticeMod2_Type);
+    LatticeMod2 *L = (LatticeMod2 *)self;
+    if (Py_TYPE(other) != &VectorMod2_Type) {
+        PyErr_SetString(PyExc_TypeError, "Lattice.add_vector(v) argument must be Vector");
+        return NULL;
+    }
+    VectorMod2 *vec = (VectorMod2 *)other;
+    if (vec->N != L->N) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in Lattice.add_vector");
+        return NULL;
+    }
+    if (LatticeMod2_add_vector_impl(L, vec->datawords)) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static bool
+LatticeMod2_add_vector_or_list_impl(PyObject *self, PyObject *other)
+{
+    assert(Py_TYPE(self) == &LatticeMod2_Type);
+    if (Py_TYPE(other) == &PyList_Type) {
+        other = Prime2_Vector(NULL, other);
+        if (other == NULL) {
+            return true;
+        }
+    }
+    else if (Py_TYPE(other) == &VectorMod2_Type) {
+        Py_INCREF(other);
+    }
+    else {
+        PyErr_SetString(PyExc_TypeError, "Lattice data entries must be list or Vector");
+        return true;
+    }
+    PyObject *res = LatticeMod2_add_vector(self, other);
+    Py_DECREF(other);
+    if (res == NULL) {
+        return true;
+    }
+    Py_DECREF(res);
+    return false;
+}
+
+static bool
+LatticeMod2_contains_impl(LatticeMod2 *L, uint64_t *vecwords)
+{
+    Py_ssize_t N = L->N;
+    Py_ssize_t N_words = L->N_words;
+    if (L->rank == N) {
+        return true;
+    }
+    uint64_t *zero_columns_mask = L->zero_columns_mask;
+    for (Py_ssize_t J = 0; J < N_words; J++) {
+        if (vecwords[J] & zero_columns_mask[J]) {
+            return false;
+        }
+    }
+    vecwords = LatticeMod2_push_vector(L, vecwords);
+    Py_ssize_t *col_to_pivot = L->col_to_pivot;
+    for (Py_ssize_t J = 0; J < N_words; J++) {
+        uint64_t word = vecwords[J];
+        Py_ssize_t *c2p = &col_to_pivot[J*64];
+        for (Py_ssize_t j = 0; j < 64; j++) {
+            assert(((word>>j) & 1) == GETBIT(vecwords, J*64+j));
+            if (((word >> j) & 1) == 0) {
+                continue;
+            }
+            Py_ssize_t i = c2p[j];
+            if (i == -1) {
+                return false;
+            }
+            uint64_t *row = L->basis[i];
+            assert(GETBIT(row, J*64+j) == 1);
+            VectorMod2_iadd_impl(&vecwords[J], &row[J], N_words - J);
+            assert(GETBIT(vecwords, J*64+j) == 0);
+            word = vecwords[J];
+            continue;
+        }
+    }
+    // making it here means everything got zeroed out
+    return true;
+}
+
+static int
+LatticeMod2_contains(PyObject *self, PyObject *other)
+{
+    assert(Py_TYPE(self) == &LatticeMod2_Type);
+    if (Py_TYPE(other) != &VectorMod2_Type) {
+        PyErr_SetString(PyExc_TypeError, "Lattice.__contains__ argument must be Vector");
+        return -1;
+    }
+    Py_ssize_t N = ((LatticeMod2 *)self)->N;
+    if (((VectorMod2 *)other)->N != N) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in Lattice.__contains__");
+        return -1;
+    }
+    return LatticeMod2_contains_impl((LatticeMod2 *)self, ((VectorMod2 *)other)->datawords);
+}
+
+static void
+LatticeMod2_reduce_impl(LatticeMod2 *L)
+{
+    Py_ssize_t R = L->rank;
+    Py_ssize_t N_words = L->N_words;
+    for (Py_ssize_t i = 0; i < R; i++) {
+        if (i && i % 100 == 0) {
+            printf("reduced %lld/%lld rows.\n", (long long)i, (long long)R);
+        }
+        uint64_t *row = L->basis[i];
+        for (Py_ssize_t i2 = i + 1; i2 < R; i2++) {
+            Py_ssize_t j = L->row_to_pivot[i2];
+            assert(GETBIT(L->basis[i2], j) == 1);
+            if (GETBIT(row, j)) {
+                uint64_t *row2 = L->basis[i2];
+                assert(GETBIT(row2, j) == 1);
+                Py_ssize_t J = j/64;
+                VectorMod2_iadd_impl(&row[J], &row2[J], N_words - 64*J);
+                assert(GETBIT(row, j) == 0);
+            }
+        }
+    }
+}
+
+static PyObject *
+LatticeMod2_reduce(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    assert(Py_TYPE(self) == &LatticeMod2_Type);
+    LatticeMod2_reduce_impl((LatticeMod2 *)self);
+    Py_RETURN_NONE;
+}
+
+static bool
+LatticeMod2_subset(LatticeMod2 *a, LatticeMod2 *b)
+{
+    assert(a->N == b->N);
+    for (Py_ssize_t i = 0; i < a->rank; i++) {
+        Py_ssize_t j = a->row_to_pivot[i];
+        if (b->col_to_pivot[j] == -1) {
+            return false;
+        }
+    }
+    for (Py_ssize_t i = 0; i < a->rank; i++) {
+        if (!LatticeMod2_contains_impl(b, a->basis[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static PyObject *
+LatticeMod2_richcompare(PyObject *a, PyObject *b, int op)
+{
+    if (Py_TYPE(a) != &LatticeMod2_Type || Py_TYPE(b) != &LatticeMod2_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    LatticeMod2 *La = (LatticeMod2 *)a;
+    LatticeMod2 *Lb = (LatticeMod2 *)b;
+    if (op == Py_EQ || op == Py_NE) {
+        bool equal = (La == Lb) || (
+            La->N == Lb->N
+            && La->rank == Lb->rank
+            && LatticeMod2_subset(La, Lb) // same rank, so this suffices.
+        );
+        return PyBool_FromLong(equal ^ (op == Py_NE));
+    }
+    if (La->N != Lb->N) {
+        PyErr_SetString(PyExc_TypeError, "dimension mismatch while comparing Lattices");
+        return NULL;
+    }
+    else if (op == Py_LE) {
+        return PyBool_FromLong(La->rank <= Lb->rank && LatticeMod2_subset(La, Lb));
+    }
+    else if (op == Py_LT) {
+        return PyBool_FromLong(La->rank < Lb->rank && LatticeMod2_subset(La, Lb));
+    }
+    else if (op == Py_GE) {
+        return PyBool_FromLong(La->rank >= Lb->rank && LatticeMod2_subset(Lb, La));
+    }
+    else {
+        assert(op == Py_GT);
+        return PyBool_FromLong(La->rank > Lb->rank && LatticeMod2_subset(Lb, La));
+    }
+}
+
+// TOOD: decompose, str, repr, relations_among
+
+static PySequenceMethods LatticeMod2_as_sequence = {
+    .sq_contains = LatticeMod2_contains
+};
+
+static PyMethodDef LatticeMod2_methods[] = {
+    {"copy", LatticeMod2_copy, METH_NOARGS, "return a new copy of this Lattice"},
+    {"tolist", LatticeMod2_tolist, METH_NOARGS, "return a list of lists representing a basis for this space"},
+    {"get_basis", LatticeMod2_get_basis, METH_NOARGS, "return a list of basis Vectors for this space"},
+    {"add_vector", LatticeMod2_add_vector, METH_O, "add another Vector to this lattice"},
+    {"reduce", LatticeMod2_reduce, METH_NOARGS, "put this Lattice basis in *reduced* row-echelon form"},
+    // {"decompose", (PyCFunction)(void(*)(void))Lattice_u8_decompose, METH_FASTCALL,
+    //  "L.decompose(keep_together=[], /) returns a pair ([indexes1, ..., indexesk], [L1, ..., Lk]) that decomposes L into a direct sum of smaller lattices. "
+    //  "Each lattice Li is the projection of L onto the indexes in indexesi. "
+    //  "Any sequence of integers provided in as an entry of keep_together will be put into the same direct summand. "},
+    {NULL, NULL, 0, NULL}
+};
+
+static PyMemberDef LatticeMod2_members[] = {
+    {"ambient_dimension", Py_T_PYSSIZET, offsetof(LatticeMod2, N), Py_READONLY,
+     "the dimension N of the ambient lattice (Z/2Z)^N"},
+    {"maxrank", Py_T_PYSSIZET, offsetof(LatticeMod2, maxrank), Py_READONLY,
+     "the maximum basis size this Lattice has room to store"},
+    {"rank", Py_T_PYSSIZET, offsetof(LatticeMod2, rank), Py_READONLY,
+     "the number of Vectors in a basis for this Lattice"},
+    {NULL}
+};
+
+static PyTypeObject LatticeMod2_Type = {
+    .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+    .tp_name = "LatticeMod2",
+    .tp_doc = PyDoc_STR("a space of vectors over a field Z/2Z"),
+    .tp_basicsize = sizeof(LatticeMod2) - sizeof(uint64_t *),
+    .tp_itemsize = sizeof(uint64_t),
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    // .tp_dealloc = Lattice_u8_dealloc,
+    .tp_methods = LatticeMod2_methods,
+    .tp_members = LatticeMod2_members,
+    .tp_as_sequence = &LatticeMod2_as_sequence,
+    .tp_richcompare = LatticeMod2_richcompare,
+    // .tp_repr = Lattice_u8_repr,
+    // .tp_str = Lattice_u8_str,
+};
+
 
 /*********************************************************************/
 /* Module stuff                                                      */
@@ -2525,6 +3064,13 @@ mutable_lattice_module_exec(PyObject *m)
     if (PyModule_AddObjectRef(m, "VectorMod2", (PyObject *)&VectorMod2_Type) < 0) {
         return -1;
     }
+    if (PyType_Ready(&LatticeMod2_Type) < 0) {
+        return -1;
+    }
+    if (PyModule_AddObjectRef(m, "LatticeMod2", (PyObject *)&LatticeMod2_Type) < 0) {
+        return -1;
+    }
+
     if (PyType_Ready(&Prime_u8_Type) < 0) {
         return -1;
     }
@@ -2543,6 +3089,7 @@ mutable_lattice_module_exec(PyObject *m)
     if (PyModule_AddObjectRef(m, "Lattice_u8", (PyObject *)&Lattice_u8_Type) < 0) {
         return -1;
     }
+
     if (PyType_Ready(&Prime_u32_Type) < 0) {
         return -1;
     }
