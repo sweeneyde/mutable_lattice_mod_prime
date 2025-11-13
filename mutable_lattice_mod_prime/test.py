@@ -709,6 +709,45 @@ class Test_Lattice_u8(unittest.TestCase):
               pp.Lattice(2, [[1, 7]])])
         )
 
+    def test_relations_among(self):
+        pp = Prime_u8(7)
+        self.assertEqual(pp.relations_among([]), pp.Lattice(0))
+        self.assertEqual(pp.relations_among([pp.Vector([])]), pp.Lattice(1, [[1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([]), pp.Vector([])]), pp.Lattice(2, [[1, 0], [0, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([1])]), pp.Lattice(1))
+        self.assertEqual(pp.relations_among([pp.Vector([0])]), pp.Lattice(1, [[1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([0]), pp.Vector([0])]), pp.Lattice(2, [[1, 0], [0, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([1]), pp.Vector([0])]), pp.Lattice(2, [[0, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([1]), pp.Vector([1])]), pp.Lattice(2, [[1, 6]]))
+        self.assertEqual(pp.relations_among([pp.Vector([1]), pp.Vector([2])]), pp.Lattice(2, [[1, 3]]))
+        self.assertEqual(pp.relations_among([pp.Vector([3]), pp.Vector([6])]), pp.Lattice(2, [[1, 3]]))
+        self.assertEqual(pp.relations_among([pp.Vector([3]), pp.Vector([6]), pp.Vector([1])]), pp.Lattice(3, [[1, 3, 0], [0, 1, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([2, 3])]), pp.Lattice(1))
+        self.assertEqual(pp.relations_among([pp.Vector([0, 0])]), pp.Lattice(1, [[1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([2, 3]), pp.Vector([1, 0])]), pp.Lattice(2))
+        self.assertEqual(pp.relations_among([pp.Vector([2, 3]), pp.Vector([4, 6])]), pp.Lattice(2, [[1, 3]]))
+        self.assertEqual(pp.relations_among([pp.Vector([3, 5]), pp.Vector([0, 0])]), pp.Lattice(2, [[0, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([3, 6]), pp.Vector([6, 5]), pp.Vector([1, 2])]), pp.Lattice(3, [[1, 3, 0], [0, 1, 1]]))
+
+    def test_rank_nullity(self):
+        random.seed(0)
+        for p in (2, 3, 5):
+            pp = Prime_u8(p)
+            for N in range(5):
+                zero = pp.Vector([0] * N)
+                for R in range(5):
+                    for _ in range(5):
+                        vecs = [pp.Vector(random.choices(range(p), k=N)) for _ in range(R)]
+                        rank = pp.Lattice(N, vecs).rank
+                        relations = pp.relations_among(vecs)
+                        nullity = relations.rank
+                        self.assertEqual(rank + nullity, R)
+                        for rel in relations.get_basis():
+                            v = zero.copy()
+                            for coeff, vec in zip(rel, vecs):
+                                v += coeff * vec
+                            self.assertEqual(v, zero)
+
 
 if __name__ == "__main__":
     unittest.main()

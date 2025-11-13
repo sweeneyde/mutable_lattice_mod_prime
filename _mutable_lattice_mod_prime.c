@@ -317,6 +317,7 @@ Prime_u8_repr(PyObject *self)
 static PyObject *Prime_u8_Vector(PyObject *self, PyObject *arg);
 static PyObject *Prime_u8_Lattice(PyObject *prime_u8, PyObject *args, PyObject *kwargs);
 static PyObject *Prime_u8_Lattice_full(PyObject *prime_u8, PyObject *arg);
+static PyObject *Prime_u8_relations_among(PyObject *prime_u8, PyObject *arg);
 
 static PyMethodDef Prime_u8_methods[] = {
     {"inverse", Prime_u8_inverse, METH_O, "Prime(p).inverse(a) gets the multiplicative inverse of a modulo p"},
@@ -324,6 +325,8 @@ static PyMethodDef Prime_u8_methods[] = {
     {"Lattice", (PyCFunction)(void(*)(void))Prime_u8_Lattice, METH_VARARGS | METH_KEYWORDS,
         "Prime(p).Lattice(N, vectors, maxrank=-1) creates as space of vectors over Z/pZ"},
     {"Lattice_full", Prime_u8_Lattice_full, METH_O, "Prime(p).Lattice_Full(N) gives the entire space (Z/pZ)^N"},
+    {"relations_among", Prime_u8_relations_among, METH_O,
+        "Prime(p).relations_among([v0, ..., vn]) gives the space of relations among the given vectors"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -1349,6 +1352,9 @@ Lattice_u8_reduce_impl(Lattice_u8 *L)
     Py_ssize_t R = L->rank;
     Py_ssize_t N = L->N;
     for (Py_ssize_t i = 0; i < R; i++) {
+        if (i && i % 100 == 0) {
+            printf("reduced %lld/%lld rows.\n", (long long)i, (long long)R);
+        }
         uint8_t *row = L->basis[i];
         for (Py_ssize_t i2 = i + 1; i2 < R; i2++) {
             Py_ssize_t j = L->row_to_pivot[i2];
@@ -1358,9 +1364,6 @@ Lattice_u8_reduce_impl(Lattice_u8 *L)
                 VectorModPrime_u8_subtract_multiple_impl(&row[j], &row2[j], N - j, row[j], p);
                 assert(row[j] == 0);
             }
-        }
-        if (i && i % 100 == 0) {
-            printf("reduced %d/%d rows.\n", (int)i, (int)R);
         }
     }
 }
@@ -1747,6 +1750,85 @@ Lattice_u8_str(PyObject *self)
     PyObject *result = PyUnicode_FromStringAndSize(buf, result_size);
     PyMem_Free(buf);
     return result;
+}
+
+static PyObject *
+Prime_u8_relations_among(PyObject *prime_u8_o, PyObject *arg)
+{
+    Prime_u8 *prime_u8 = (Prime_u8 *)prime_u8_o;
+    if (!PyList_CheckExact(arg)) {
+        PyErr_SetString(PyExc_TypeError, "relations_among(vecs) argument must be a list");
+        return NULL;
+    }
+    Py_ssize_t R = PyList_GET_SIZE(arg);
+    if (R == 0) {
+        return (PyObject *)Lattice_u8_new_impl(prime_u8, 0, 0);
+    }
+    Py_ssize_t N = -1;
+    uint8_t p = prime_u8->p;
+    for (Py_ssize_t i = 0; i < R; i++) {
+        PyObject *v = PyList_GET_ITEM(arg, i);
+        if (Py_TYPE(v) != &VectorModPrime_u8_Type) {
+            PyErr_SetString(PyExc_TypeError, "relations_among(vecs) argument must be a list of Vectors");
+            return NULL;
+        }
+        if (((VectorModPrime_u8 *)v)->p != p) {
+            PyErr_SetString(PyExc_ValueError, "prime mismatch in relations_among");
+            return NULL;
+        }
+        if (i == 0) {
+            N = Py_SIZE(v);
+        } else {
+            if (Py_SIZE(v) != N) {
+                PyErr_SetString(PyExc_ValueError, "length mismatch in relations_among");
+                return NULL;
+            }
+        }
+    }
+    if (N > PY_SSIZE_T_MAX - R || (size_t)N + (size_t)R > PY_SSIZE_T_MAX/sizeof(uint8_t)) {
+        PyErr_SetNone(PyExc_OverflowError);
+        return NULL;
+    }
+    uint8_t *scratch = (uint8_t *)PyMem_Malloc((N + R) * sizeof(uint8_t));
+    if (scratch == NULL) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+    Lattice_u8 *L = Lattice_u8_new_impl(prime_u8, N + R, R);
+    if (L == NULL) {
+        PyMem_Free(scratch);
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < R; i++) {
+        if (i && i % 100 == 0) {
+            printf("kernel progress %lld/%lld\n", (long long)i, (long long)R);
+        }
+        VectorModPrime_u8 *v = (VectorModPrime_u8 *)PyList_GET_ITEM(arg, i);
+        memcpy(scratch, v->data, N*sizeof(uint8_t));
+        memset(scratch + N, 0, R*sizeof(uint8_t));
+        scratch[N+i] = 1;
+        bool err = Lattice_u8_add_vector_impl(L, scratch);
+        assert(!err); (void)err;
+    }
+    assert(L->rank == R);
+    PyMem_Free(scratch);
+
+    Py_ssize_t cutoff_i = 0;
+    while (cutoff_i < R && L->row_to_pivot[cutoff_i] < N) {
+        cutoff_i++;
+    }
+    Lattice_u8 *result = Lattice_u8_new_impl(prime_u8, R, R - cutoff_i);
+    if (result == NULL) {
+        Py_DECREF(L);
+        return NULL;
+    }
+    for (Py_ssize_t i = cutoff_i; i < R; i++) {
+        assert(L->row_to_pivot[i] >= N);
+        bool err = Lattice_u8_add_vector_impl(result, L->basis[i] + N);
+        assert(!err); (void)err;
+    }
+    Py_DECREF(L);
+    return (PyObject *)result;
 }
 
 static PySequenceMethods Lattice_u8_as_sequence = {
