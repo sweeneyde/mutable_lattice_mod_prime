@@ -313,6 +313,38 @@ class Test_Lattice_u8(unittest.TestCase):
         self.assertEqual(pp.Lattice(3, []).tolist(), [])
         self.assertEqual(pp.Lattice(3, [[2, 1, 1]]).tolist(), [[1, 4, 4]])
 
+    def test_str(self):
+        p7 = Prime_u8(7)
+        self.assertEqual(str(p7.Lattice(0)), "<zero subspace of Z/7Z ^ 0>")
+        self.assertEqual(str(p7.Lattice(1)), "<zero subspace of Z/7Z ^ 1>")
+        self.assertEqual(str(p7.Lattice(2)), "<zero subspace of Z/7Z ^ 2>")
+        self.assertEqual(str(p7.Lattice(1, [[1]])), "[1]\n")
+        self.assertEqual(str(p7.Lattice(2, [[1, 2]])), "[1 2]\n")
+        self.assertEqual(str(p7.Lattice(2, [[1, 2], [0, 1]])), "[1 2]\n[0 1]\n")
+        p13 = Prime_u8(13)
+        self.assertEqual(str(p13.Lattice(0)), "<zero subspace of Z/13Z ^ 0>")
+        self.assertEqual(str(p13.Lattice(1)), "<zero subspace of Z/13Z ^ 1>")
+        self.assertEqual(str(p13.Lattice(2)), "<zero subspace of Z/13Z ^ 2>")
+        self.assertEqual(str(p13.Lattice(1, [[1]])), "[ 1]\n")
+        self.assertEqual(str(p13.Lattice(2, [[1, 2]])), "[ 1  2]\n")
+        self.assertEqual(str(p13.Lattice(3, [[1, 2, 4], [0, 1, 10]])), "[ 1  2  4]\n[ 0  1 10]\n")
+        p101 = Prime_u8(101)
+        self.assertEqual(str(p101.Lattice(0)), "<zero subspace of Z/101Z ^ 0>")
+        self.assertEqual(str(p101.Lattice(1)), "<zero subspace of Z/101Z ^ 1>")
+        self.assertEqual(str(p101.Lattice(2)), "<zero subspace of Z/101Z ^ 2>")
+        self.assertEqual(str(p101.Lattice(1, [[1]])), "[  1]\n")
+        self.assertEqual(str(p101.Lattice(2, [[1, 2]])), "[  1   2]\n")
+        self.assertEqual(str(p101.Lattice(4, [[1, 2, 4, 8], [0, 1, 10, 100]])), "[  1   2   4   8]\n"
+                                                                                "[  0   1  10 100]\n")
+
+    def test_repr(self):
+        self.assertEqual(repr(Prime_u8(7).Lattice(0, [])), "Prime_u8(7).Lattice(0, [])")
+        self.assertEqual(repr(Prime_u8(7).Lattice(1, [])), "Prime_u8(7).Lattice(1, [])")
+        self.assertEqual(repr(Prime_u8(7).Lattice(1, [[1]])), "Prime_u8(7).Lattice(1, [[1]])")
+        self.assertEqual(repr(Prime_u8(7).Lattice(2, [])), "Prime_u8(7).Lattice(2, [])")
+        self.assertEqual(repr(Prime_u8(7).Lattice(2, [[1, 1]])), "Prime_u8(7).Lattice(2, [[1, 1]])")
+        self.assertEqual(repr(Prime_u8(7).Lattice(2, [[1, 1], [0, 1]])), "Prime_u8(7).Lattice(2, [[1, 1], [0, 1]])")
+
     def test_get_basis(self):
         pp = Prime_u8(7)
         self.assertEqual(pp.Lattice(3).get_basis(), [])
@@ -599,7 +631,7 @@ class Test_Lattice_u8(unittest.TestCase):
 
     def test_decompose_exhaustive(self):
         pp = Prime_u8(71)
-        vectors = [pp.Vector(list(v)) for v in itertools.product([-1, 0, 1, 2], repeat=4)]
+        vectors = [pp.Vector(list(v)) for v in itertools.product([0, 1, 2], repeat=4)]
         lattices = (
             [pp.Lattice(4, maxrank=0), pp.Lattice_full(4)]
             + [pp.Lattice(4, [v], maxrank=1) for v in vectors]

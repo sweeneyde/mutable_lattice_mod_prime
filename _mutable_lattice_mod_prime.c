@@ -731,31 +731,16 @@ VectorModPrime_u8_repr(PyObject *self)
     return result;
 }
 
-PyObject *
-VectorModPrime_u8_str(PyObject *self)
+static void
+VectorModPrime_u8_str_impl(Py_ssize_t width, uint8_t *data, Py_ssize_t N, char *buf)
 {
-    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
-    if (Py_SIZE(vec) == 0) {
-        return PyUnicode_FromStringAndSize("[]", 2);
-    }
-    uint8_t p = vec->p;
-    Py_ssize_t width = 0, q = p;
-    while (q) {
-        q /= 10;
-        width++;
-    }
-    char *buf = PyMem_Malloc(Py_SIZE(vec)*(width + 1) + 1);
-    if (buf == NULL) {
-        return PyErr_NoMemory();
-    }
     char *dest = buf;
     *dest++ = '[';
-    for (Py_ssize_t j = 0; j < Py_SIZE(vec); j++) {
+    for (Py_ssize_t j = 0; j < N; j++) {
         if (j) {
             *dest++ = ' ';
         }
-        uint8_t x = vec->data[j];
-        assert(x < p);
+        uint8_t x = data[j];
         dest[width-1] = '0' + (x % 10);
         x /= 10;
         for (int jj = width-2; jj >= 0; jj--) {
@@ -765,8 +750,26 @@ VectorModPrime_u8_str(PyObject *self)
         dest += width;
     }
     *dest++ = ']';
-    assert(dest - buf == Py_SIZE(vec)*(width + 1) + 1);
-    PyObject *result = PyUnicode_FromStringAndSize(buf, Py_SIZE(vec)*(width + 1) + 1);
+    assert(dest - buf == (N == 0 ? 2 : N*(width + 1) + 1));
+}
+
+PyObject *
+VectorModPrime_u8_str(PyObject *self)
+{
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
+    uint8_t p = vec->p;
+    Py_ssize_t width = 0, q = p;
+    while (q) {
+        q /= 10;
+        width++;
+    }
+    Py_ssize_t result_size = Py_SIZE(vec) == 0 ? 2 : Py_SIZE(vec)*(width + 1) + 1;
+    char *buf = PyMem_Malloc(result_size);
+    if (buf == NULL) {
+        return PyErr_NoMemory();
+    }
+    VectorModPrime_u8_str_impl(width, vec->data, Py_SIZE(vec), buf);
+    PyObject *result = PyUnicode_FromStringAndSize(buf, result_size);
     PyMem_Free(buf);
     return result;
 }
@@ -1356,6 +1359,9 @@ Lattice_u8_reduce_impl(Lattice_u8 *L)
                 assert(row[j] == 0);
             }
         }
+        if (i && i % 100 == 0) {
+            printf("reduced %d/%d rows.\n", (int)i, (int)R);
+        }
     }
 }
 
@@ -1713,6 +1719,36 @@ Lattice_u8_repr(PyObject *self)
     return result;
 }
 
+static PyObject *
+Lattice_u8_str(PyObject *self)
+{
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    Py_ssize_t N = L->N;
+    Py_ssize_t R = L->rank;
+    uint8_t p = L->prime_u8->p;
+    if (R == 0) {
+        return PyUnicode_FromFormat("<zero subspace of Z/%dZ ^ %zd>", (int)p, N);
+    }
+    Py_ssize_t width = 0, q = p;
+    while (q) {
+        q /= 10;
+        width++;
+    }
+    Py_ssize_t row_size = (N == 0 ? 2 : N * (width + 1) + 1);
+    Py_ssize_t result_size = (row_size + 1) * R;
+    char *buf = PyMem_Malloc(result_size);
+    if (buf == NULL) {
+        return PyErr_NoMemory();
+    }
+    for (Py_ssize_t i = 0; i < R; i++) {
+        VectorModPrime_u8_str_impl(width, L->basis[i], N, buf + (row_size + 1)*i);
+        buf[(row_size + 1)*i + row_size] = '\n';
+    }
+    PyObject *result = PyUnicode_FromStringAndSize(buf, result_size);
+    PyMem_Free(buf);
+    return result;
+}
+
 static PySequenceMethods Lattice_u8_as_sequence = {
     .sq_contains = Lattice_u8_contains
 };
@@ -1753,6 +1789,7 @@ static PyTypeObject Lattice_u8_Type = {
     .tp_as_sequence = &Lattice_u8_as_sequence,
     .tp_richcompare = Lattice_richcompare,
     .tp_repr = Lattice_u8_repr,
+    .tp_str = Lattice_u8_str,
 };
 
 
