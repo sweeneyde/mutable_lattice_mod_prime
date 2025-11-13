@@ -960,6 +960,24 @@ class TestLatticeMod2(unittest.TestCase):
                 self.assertEqual(a >= b, b_in_a)
                 self.assertEqual(a > b, b_in_a and not a_in_b)
 
+    def test_str(self):
+        pp = Prime2()
+        self.assertEqual(str(pp.Lattice(0)), "<zero subspace of Z/2Z ^ 0>")
+        self.assertEqual(str(pp.Lattice(1)), "<zero subspace of Z/2Z ^ 1>")
+        self.assertEqual(str(pp.Lattice(2)), "<zero subspace of Z/2Z ^ 2>")
+        self.assertEqual(str(pp.Lattice(1, [[1]])), "[1]\n")
+        self.assertEqual(str(pp.Lattice(2, [[1, 0]])), "[10]\n")
+        self.assertEqual(str(pp.Lattice(2, [[1, 1], [0, 1]])), "[11]\n[01]\n")
+
+    def test_repr(self):
+        pp = Prime2()
+        self.assertEqual(repr(pp.Lattice(0, [])), "Prime(2).Lattice(0, [])")
+        self.assertEqual(repr(pp.Lattice(1, [])), "Prime(2).Lattice(1, [])")
+        self.assertEqual(repr(pp.Lattice(1, [[1]])), "Prime(2).Lattice(1, [[1]])")
+        self.assertEqual(repr(pp.Lattice(2, [])), "Prime(2).Lattice(2, [])")
+        self.assertEqual(repr(pp.Lattice(2, [[1, 1]])), "Prime(2).Lattice(2, [[1, 1]])")
+        self.assertEqual(repr(pp.Lattice(2, [[1, 1], [0, 1]])), "Prime(2).Lattice(2, [[1, 1], [0, 1]])")
+
     def test_random(self):
         random.seed(123)
         pp = Prime2()

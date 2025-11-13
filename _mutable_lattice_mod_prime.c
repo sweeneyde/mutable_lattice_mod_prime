@@ -2999,7 +2999,42 @@ LatticeMod2_richcompare(PyObject *a, PyObject *b, int op)
     }
 }
 
-// TOOD: decompose, str, repr, relations_among
+static PyObject *
+LatticeMod2_repr(PyObject *self)
+{
+    PyObject *tolist = LatticeMod2_tolist(self, NULL);
+    if (tolist == NULL) {
+        return NULL;
+    }
+    LatticeMod2 *L = (LatticeMod2 *)self;
+    return PyUnicode_FromFormat("Prime(2).Lattice(%zd, %R)", L->N, tolist);
+}
+
+static PyObject *
+LatticeMod2_str(PyObject *self)
+{
+    LatticeMod2 *L = (LatticeMod2 *)self;
+    Py_ssize_t R = L->rank;
+    Py_ssize_t N = L->N;
+    if (R == 0) {
+        return PyUnicode_FromFormat("<zero subspace of Z/2Z ^ %zd>", N);
+    }
+    Py_ssize_t row_size = N + 2;
+    Py_ssize_t result_size = (row_size + 1) * R;
+    char *buf = PyMem_Malloc(result_size);
+    if (buf == NULL) {
+        return PyErr_NoMemory();
+    }
+    for (Py_ssize_t i = 0; i < R; i++) {
+        VectorMod2_str_impl(L->basis[i], N, buf + (row_size + 1)*i);
+        buf[(row_size + 1)*i + row_size] = '\n';
+    }
+    PyObject *result = PyUnicode_FromStringAndSize(buf, result_size);
+    PyMem_Free(buf);
+    return result;
+}
+
+// TOOD: relations_among
 
 static PySequenceMethods LatticeMod2_as_sequence = {
     .sq_contains = LatticeMod2_contains
@@ -3035,13 +3070,12 @@ static PyTypeObject LatticeMod2_Type = {
     .tp_basicsize = sizeof(LatticeMod2) - sizeof(uint64_t *),
     .tp_itemsize = sizeof(uint64_t),
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
-    // .tp_dealloc = Lattice_u8_dealloc,
     .tp_methods = LatticeMod2_methods,
     .tp_members = LatticeMod2_members,
     .tp_as_sequence = &LatticeMod2_as_sequence,
     .tp_richcompare = LatticeMod2_richcompare,
-    // .tp_repr = Lattice_u8_repr,
-    // .tp_str = Lattice_u8_str,
+    .tp_repr = LatticeMod2_repr,
+    .tp_str = LatticeMod2_str,
 };
 
 
