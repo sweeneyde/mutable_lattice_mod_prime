@@ -2349,12 +2349,12 @@ VectorMod2_sq_item(PyObject *self, Py_ssize_t j)
 static int
 VectorMod2_sq_ass_item(PyObject *self, Py_ssize_t j, PyObject *xo)
 {
-    Py_ssize_t N = Py_SIZE(self);
+    VectorMod2 *v = (VectorMod2 *)self;
+    Py_ssize_t N = v->N;
     if (!(0 <= j && j < N)) {
         PyErr_SetString(PyExc_IndexError, "Vector index out of range");
         return -1;
     }
-    VectorMod2 *v = (VectorMod2 *)self;
     int bit;
     if (object_mod2(xo, &bit)) {
         return -1;
@@ -2590,7 +2590,7 @@ LatticeMod2_new_impl(Py_ssize_t N, Py_ssize_t maxrank)
     if (!L) {
         return NULL;
     }
-    uint64_t **buffer = (uint64_t **)L->basis;
+    uint64_t *buffer = (uint64_t *)L->basis;
     uint64_t *zero_columns_mask = (uint64_t *)&buffer[N];
     Py_ssize_t *col_to_pivot = (Py_ssize_t *)&buffer[2*N];
     Py_ssize_t *row_to_pivot = (Py_ssize_t *)&buffer[3*N];
@@ -2785,7 +2785,8 @@ LatticeMod2_add_vector_impl(LatticeMod2 *L, uint64_t *vecwords)
     for (Py_ssize_t J = 0; J < N_words; J++) {
         uint64_t word = vecwords[J];
         Py_ssize_t *c2p = &L->col_to_pivot[J*64];
-        for (Py_ssize_t j = 0; j < 64; j++) {
+        Py_ssize_t j_end = J < N_words - 1 ? 64 : N-64*J;
+        for (Py_ssize_t j = 0; j < j_end; j++) {
             assert(((word>>j) & 1) == GETBIT(vecwords, J*64+j));
             if (((word >> j) & 1) == 0) {
                 continue;
@@ -2804,7 +2805,7 @@ LatticeMod2_add_vector_impl(LatticeMod2 *L, uint64_t *vecwords)
                 return true;
             }
             // Found a place to put this vector
-            LatticeMod2_insert_vector_with_pivot(L, vecwords, j);
+            LatticeMod2_insert_vector_with_pivot(L, vecwords, J*64+j);
             return false;
         }
     }
@@ -2877,7 +2878,8 @@ LatticeMod2_contains_impl(LatticeMod2 *L, uint64_t *vecwords)
     for (Py_ssize_t J = 0; J < N_words; J++) {
         uint64_t word = vecwords[J];
         Py_ssize_t *c2p = &col_to_pivot[J*64];
-        for (Py_ssize_t j = 0; j < 64; j++) {
+        Py_ssize_t j_end = J < N_words - 1 ? 64 : N-64*J;
+        for (Py_ssize_t j = 0; j < j_end; j++) {
             assert(((word>>j) & 1) == GETBIT(vecwords, J*64+j));
             if (((word >> j) & 1) == 0) {
                 continue;
@@ -3034,7 +3036,175 @@ LatticeMod2_str(PyObject *self)
     return result;
 }
 
-// TOOD: relations_among
+static PyObject *
+LatticeMod2_decompose(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs >= 2) {
+        PyErr_SetString(PyExc_TypeError, "Lattice.decompose(keep_together=[]) takes 0 or 1 arguments");
+        return NULL;
+    }
+    LatticeMod2 *L = (LatticeMod2 *)self;
+    LatticeMod2_reduce_impl(L);
+    Py_ssize_t N = L->N;
+    Py_ssize_t N_words = L->N_words;
+    // Implicit union/find data structure on the indexes
+    Py_ssize_t *uf_parent = PyMem_Malloc(N * sizeof(Py_ssize_t));
+    Py_ssize_t *uf_size = PyMem_Malloc(N * sizeof(Py_ssize_t));
+    // Used later for partitioning. Avoid quadratic time.
+    uint64_t *scratch = PyMem_Malloc(N_words * sizeof(uint64_t));
+    Py_ssize_t *root_to_component_index = PyMem_Malloc(N * sizeof(Py_ssize_t));
+    Py_ssize_t *indexes_by_component = PyMem_Malloc(N * sizeof(Py_ssize_t));
+    Py_ssize_t *component_to_size = NULL;
+    Py_ssize_t *component_to_indexes_start = NULL;
+    Py_ssize_t *maxranks = NULL;
+    PyObject *result_indexes_by_component = NULL;
+    PyObject *components = NULL;
+    PyObject *result = NULL;
+    if (!(uf_parent && uf_size && root_to_component_index && indexes_by_component && scratch)) {
+        PyErr_NoMemory();
+        goto error;
+    }
+    for (Py_ssize_t j = 0; j < N; j++) {
+        uf_parent[j] = j;
+        uf_size[j] = 1;
+    }
+    for (Py_ssize_t i = 0; i < L->rank; i++) {
+        uint64_t *row = L->basis[i];
+        Py_ssize_t j0 = L->row_to_pivot[i];
+        for (Py_ssize_t j = j0 + 1; j < N; j++) {
+            if (GETBIT(row, j)) {
+                uf_union(uf_parent, uf_size, j0, j);
+            }
+        }
+    }
+    if (nargs == 1) {
+        if (unite_groups(N, uf_parent, uf_size, args[0])) {
+            goto error;
+        }
+    }
+    // flatten
+    for (Py_ssize_t j = 0; j < N; j++) {
+        (void)uf_find(uf_parent, j);
+        assert(uf_parent[uf_parent[j]] == uf_parent[j]);
+    }
+
+    // find num_components and root_to_component_index
+    for (Py_ssize_t j = 0; j < N; j++) {
+        root_to_component_index[j] = -1;
+    }
+    Py_ssize_t num_components = 0;
+    for (Py_ssize_t j = 0; j < N; j++) {
+        if (uf_parent[j] == j) {
+            root_to_component_index[j] = num_components++;
+        }
+    }
+
+    // Allocate buffers that require only num_components entries
+    component_to_indexes_start = PyMem_Malloc(num_components * sizeof(Py_ssize_t));
+    component_to_size = PyMem_Calloc(num_components, sizeof(Py_ssize_t));
+    maxranks = PyMem_Calloc(num_components, sizeof(Py_ssize_t));
+    if (!(component_to_indexes_start && component_to_size && maxranks)) {
+        PyErr_NoMemory();
+        goto error;
+    }
+
+    // build component_to_indexes_start.
+    {
+        Py_ssize_t indexes_start = 0;
+        for (Py_ssize_t j = 0; j < N; j++) {
+            if (uf_parent[j] == j) {
+                Py_ssize_t k = root_to_component_index[j];
+                component_to_indexes_start[k] = indexes_start;
+                Py_ssize_t sub_N = uf_size[j];
+                indexes_start += sub_N;
+            }
+        }
+        assert(indexes_start == N);
+    }
+
+    // build component_to_size and indexes_by_component
+    for (Py_ssize_t j = 0; j < N; j++) {
+        Py_ssize_t k = root_to_component_index[uf_parent[j]];
+        Py_ssize_t start = component_to_indexes_start[k];
+        indexes_by_component[start + component_to_size[k]] = j;
+        component_to_size[k]++;
+    }
+
+    // find maxranks
+    for (Py_ssize_t i = 0; i < L->rank; i++) {
+        maxranks[root_to_component_index[uf_parent[L->row_to_pivot[i]]]]++;
+    }
+
+    // allocate the components
+    if (!(components = PyList_New(num_components))) {
+        goto error;
+    }
+    for (Py_ssize_t k = 0; k < num_components; k++) {
+        Py_ssize_t sub_N = component_to_size[k];
+        assert(sub_N == uf_size[uf_parent[indexes_by_component[component_to_indexes_start[k]]]]);
+        Py_ssize_t maxrank = maxranks[k];
+        assert(maxrank <= sub_N);
+        PyObject *comp = (PyObject *)LatticeMod2_new_impl(sub_N, maxrank);
+        if (comp == NULL) {
+            goto error;
+        }
+        PyList_SET_ITEM(components, k, comp);
+    }
+
+    // add in the rows
+    for (Py_ssize_t i = L->rank - 1; i >= 0; i--) {
+        Py_ssize_t k = root_to_component_index[uf_parent[L->row_to_pivot[i]]];
+        Py_ssize_t start = component_to_indexes_start[k];
+        Py_ssize_t sub_N = component_to_size[k];
+        Py_ssize_t sub_N_words = (sub_N + 63) / 64;
+        uint64_t *row = L->basis[i];
+        memset(scratch, 0, sub_N_words * sizeof(uint64_t));
+        for (Py_ssize_t w = 0; w < sub_N; w++) {
+            Py_ssize_t j = indexes_by_component[start + w];
+            scratch[w/64] |= GETBIT(row, j) << (w % 64);
+        }
+        LatticeMod2 *comp = (LatticeMod2 *)PyList_GET_ITEM(components, k);
+        assert(comp->N == sub_N);
+        LatticeMod2_add_vector_impl(comp, scratch);
+    }
+
+    // Construct the lists of indexes
+    if (!(result_indexes_by_component = PyList_New(num_components))) {
+        goto error;
+    }
+    for (Py_ssize_t k = 0; k < num_components; k++) {
+        Py_ssize_t sub_N = component_to_size[k];
+        Py_ssize_t start = component_to_indexes_start[k];
+        PyObject *index_list = PyList_New(sub_N);
+        if (index_list == NULL) {
+            goto error;
+        }
+        PyList_SET_ITEM(result_indexes_by_component, k, index_list);
+        for (Py_ssize_t w = 0; w < sub_N; w++) {
+            Py_ssize_t j = indexes_by_component[start + w];
+            PyObject *j_obj = PyLong_FromSsize_t(j);
+            if (j_obj == NULL) {
+                goto error;
+            }
+            PyList_SET_ITEM(index_list, w, j_obj);
+        }
+    }
+    result = PyTuple_Pack(2, result_indexes_by_component, components);
+error:
+    PyMem_Free(uf_parent);
+    PyMem_Free(uf_size);
+    PyMem_Free(scratch);
+    PyMem_Free(root_to_component_index);
+    PyMem_Free(indexes_by_component);
+    PyMem_Free(component_to_indexes_start);
+    PyMem_Free(component_to_size);
+    PyMem_Free(maxranks);
+    Py_XDECREF(components);
+    Py_XDECREF(result_indexes_by_component);
+    return result;
+}
+
+// TODO: decompose, relations_among
 
 static PySequenceMethods LatticeMod2_as_sequence = {
     .sq_contains = LatticeMod2_contains
@@ -3046,10 +3216,10 @@ static PyMethodDef LatticeMod2_methods[] = {
     {"get_basis", LatticeMod2_get_basis, METH_NOARGS, "return a list of basis Vectors for this space"},
     {"add_vector", LatticeMod2_add_vector, METH_O, "add another Vector to this lattice"},
     {"reduce", LatticeMod2_reduce, METH_NOARGS, "put this Lattice basis in *reduced* row-echelon form"},
-    // {"decompose", (PyCFunction)(void(*)(void))Lattice_u8_decompose, METH_FASTCALL,
-    //  "L.decompose(keep_together=[], /) returns a pair ([indexes1, ..., indexesk], [L1, ..., Lk]) that decomposes L into a direct sum of smaller lattices. "
-    //  "Each lattice Li is the projection of L onto the indexes in indexesi. "
-    //  "Any sequence of integers provided in as an entry of keep_together will be put into the same direct summand. "},
+    {"decompose", (PyCFunction)(void(*)(void))LatticeMod2_decompose, METH_FASTCALL,
+     "L.decompose(keep_together=[], /) returns a pair ([indexes1, ..., indexesk], [L1, ..., Lk]) that decomposes L into a direct sum of smaller lattices. "
+     "Each lattice Li is the projection of L onto the indexes in indexesi. "
+     "Any sequence of integers provided in as an entry of keep_together will be put into the same direct summand. "},
     {NULL, NULL, 0, NULL}
 };
 
