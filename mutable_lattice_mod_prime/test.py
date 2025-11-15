@@ -958,6 +958,16 @@ class TestLatticeMod2(unittest.TestCase):
         L.reduce()
         self.assertEqual(L.tolist(), [[1, 0, 0, 0], [0, 1, 1, 0], [0, 0, 0, 1]])
 
+    def test_reduce_large(self):
+        pp = Prime2()
+        for N in [0, 1, 2, 10, 100, 200]:
+            L = pp.Lattice(N)
+            for i in range(N):
+                L.add_vector(pp.Vector([0] * i + [1] * (N - i)))
+            self.assertEqual(L.tolist(), [[0] * i + [1] * (N - i) for i in range(N)])
+            L.reduce()
+            self.assertEqual(L.tolist(), [[0] * i + [1] + [0] * (N - 1 - i) for i in range(N)])
+
     def test_comparison_exhaustive(self):
         pp = Prime2()
         # get all row echelon forms
@@ -1003,7 +1013,7 @@ class TestLatticeMod2(unittest.TestCase):
     def test_random(self):
         random.seed(123)
         pp = Prime2()
-        for N in [0, 1, 2, 3, 4, 5, 10, 20]:
+        for N in [0, 1, 2, 3, 4, 5, 10, 20, 64, 65, 128, 129]:
             for _ in range(20):
                 mod = pp.Lattice(N)
                 vecs = [
@@ -1104,6 +1114,7 @@ class TestLatticeMod2(unittest.TestCase):
             [pp.Lattice(4, maxrank=0), pp.Lattice_full(4)]
             + [pp.Lattice(4, [v], maxrank=1) for v in vectors]
             + [pp.Lattice(4, [v, w], maxrank=2) for v, w in itertools.combinations(vectors, 2)]
+            + [pp.Lattice(4, [u, v, w], maxrank=3) for u, v, w in itertools.combinations(vectors, 3)]
         )
         for L in lattices:
             indexes, summands = L.decompose()

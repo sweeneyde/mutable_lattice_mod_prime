@@ -2931,10 +2931,12 @@ LatticeMod2_reduce_impl(LatticeMod2 *L)
             assert(GETBIT(L->basis[i2], j) == 1);
             if (GETBIT(row, j)) {
                 uint64_t *row2 = L->basis[i2];
+                assert(GETBIT(row, j) == 1);
                 assert(GETBIT(row2, j) == 1);
                 Py_ssize_t J = j/64;
-                VectorMod2_iadd_impl(&row[J], &row2[J], N_words - 64*J);
+                VectorMod2_iadd_impl(&row[J], &row2[J], N_words - J);
                 assert(GETBIT(row, j) == 0);
+                assert(GETBIT(row2, j) == 1);
             }
         }
     }
