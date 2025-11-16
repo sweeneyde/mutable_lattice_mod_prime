@@ -1188,6 +1188,43 @@ class TestLatticeMod2(unittest.TestCase):
               pp.Lattice(2, [[1, 1]])])
         )
 
+    def test_relation_among(self):
+        pp = Prime2()
+        self.assertEqual(pp.relations_among([]), pp.Lattice(0))
+        self.assertEqual(pp.relations_among([pp.Vector([])]), pp.Lattice(1, [[1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([]), pp.Vector([])]), pp.Lattice(2, [[1, 0], [0, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([1])]), pp.Lattice(1))
+        self.assertEqual(pp.relations_among([pp.Vector([0])]), pp.Lattice(1, [[1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([0]), pp.Vector([0])]), pp.Lattice(2, [[1, 0], [0, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([0]), pp.Vector([1])]), pp.Lattice(2, [[1, 0]]))
+        self.assertEqual(pp.relations_among([pp.Vector([1]), pp.Vector([0])]), pp.Lattice(2, [[0, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([1]), pp.Vector([1])]), pp.Lattice(2, [[1, 1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([0, 0])]), pp.Lattice(1, [[1]]))
+        self.assertEqual(pp.relations_among([pp.Vector([0, 1])]), pp.Lattice(1))
+        self.assertEqual(pp.relations_among([pp.Vector([1, 0])]), pp.Lattice(1))
+        self.assertEqual(pp.relations_among([pp.Vector([1, 1])]), pp.Lattice(1))
+        self.assertEqual(pp.relations_among([pp.Vector([1, 0]), pp.Vector([0, 1])]), pp.Lattice(2))
+        self.assertEqual(pp.relations_among([pp.Vector([1, 0]), pp.Vector([0, 1]), pp.Vector([1, 1])]), pp.Lattice(3, [[1, 1, 1]]))
+
+    def test_rank_nullity(self):
+        random.seed(0)
+        pp = Prime2()
+        for N in [0, 1, 2, 3, 4, 63, 64, 65, 100, 127, 128, 129]:
+            zero = pp.Vector([0] * N)
+            for R in range(5):
+                for _ in range(5):
+                    vecs = [pp.Vector(random.choices(range(2), k=N)) for _ in range(R)]
+                    rank = pp.Lattice(N, vecs).rank
+                    relations = pp.relations_among(vecs)
+                    nullity = relations.rank
+                    self.assertEqual(rank + nullity, R)
+                    for rel in relations.get_basis():
+                        v = zero.copy()
+                        for coeff, vec in zip(rel, vecs):
+                            v += coeff * vec
+                        self.assertEqual(v, zero)
+
+
 
 if __name__ == "__main__":
     unittest.main()

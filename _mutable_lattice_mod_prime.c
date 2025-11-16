@@ -2058,7 +2058,7 @@ Prime2_repr(PyObject *Py_UNUSED(self))
 static PyObject *Prime2_Vector(PyObject *self, PyObject *arg);
 static PyObject *Prime2_Lattice(PyObject *self, PyObject *args, PyObject *kwargs);
 static PyObject *Prime2_Lattice_full(PyObject *self, PyObject *arg);
-// static PyObject *Prime2_relations_among(PyObject *self, PyObject *arg);
+static PyObject *Prime2_relations_among(PyObject *self, PyObject *arg);
 
 static PyMethodDef Prime2_methods[] = {
     {"inverse", Prime2_inverse, METH_O, "Prime(2).inverse(a) gets the multiplicative inverse of a modulo 2"},
@@ -2066,8 +2066,8 @@ static PyMethodDef Prime2_methods[] = {
     {"Lattice", (PyCFunction)(void(*)(void))Prime2_Lattice, METH_VARARGS | METH_KEYWORDS,
         "Prime(2).Lattice(N, vectors, maxrank=-1) creates as space of vectors over Z/pZ"},
     {"Lattice_full", Prime2_Lattice_full, METH_O, "Prime(2).Lattice_Full(N) gives the entire space (Z/2Z)^N"},
-    // {"relations_among", Prime2_relations_among, METH_O,
-    //     "Prime(2).relations_among([v0, ..., vn]) gives the space of relations among the given vectors"},
+    {"relations_among", Prime2_relations_among, METH_O,
+        "Prime(2).relations_among([v0, ..., vn]) gives the space of relations among the given vectors"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -2244,9 +2244,9 @@ VectorMod2_add(PyObject *a, PyObject *b)
 }
 
 static inline void
-VectorMod2_iadd_impl(uint64_t *a, uint64_t *b, Py_ssize_t num_words)
+VectorMod2_iadd_impl(uint64_t *a, uint64_t *b, Py_ssize_t num_chunks)
 {
-    for (Py_ssize_t j = 0; j < num_words; j++) {
+    for (Py_ssize_t j = 0; j < num_chunks; j++) {
         a[j] ^= b[j];
     }
 }
@@ -2519,7 +2519,7 @@ static PyTypeObject LatticeMod2_Type;
 typedef struct {
     PyObject_VAR_HEAD
     Py_ssize_t N; // The ambient dimension; we're a sublattice of Z/2 ^ N
-    Py_ssize_t N_words; // ceil(N/64)
+    Py_ssize_t N_chunks; // ceil(N/64)
     Py_ssize_t rank; // The number of basis vectors
     Py_ssize_t maxrank; // How many vectors we have space for
     uint64_t *zero_columns_mask;
@@ -2548,8 +2548,8 @@ static uint64_t *
 LatticeMod2_push_vector(LatticeMod2 *L, uint64_t *vecwords)
 {
     assert(L->rank <= L->maxrank);
-    uint64_t *data = L->data + L->N_words * L->rank;
-    memcpy(data, vecwords, L->N_words * sizeof(uint64_t));
+    uint64_t *data = L->data + L->N_chunks * L->rank;
+    memcpy(data, vecwords, L->N_chunks * sizeof(uint64_t));
     return data;
 }
 
@@ -2567,26 +2567,26 @@ LatticeMod2_new_impl(Py_ssize_t N, Py_ssize_t maxrank)
     if (maxrank == -1 || maxrank > N) {
         maxrank = N;
     }
-    Py_ssize_t N_words = (N + 63) / 64;
+    Py_ssize_t N_chunks = (N + 63) / 64;
     // We need:
     //   3*N words for the Py_ssize_t data
     // + N words for the basis
-    // + N_words*(maxrank + 1) words for the buffers
-    // == 4*N*sizeof(Py_ssize_t) + N_words*(maxrank + 1)*sizeof(uint64_t)
-    // <= (4*N + N_words*(maxrank + 1)) * sizeof(uint64_t)
+    // + N_chunks*(maxrank + 1) words for the buffers
+    // == 4*N*sizeof(Py_ssize_t) + N_chunks*(maxrank + 1)*sizeof(uint64_t)
+    // <= (4*N + N_chunks*(maxrank + 1)) * sizeof(uint64_t)
     static_assert(sizeof(Py_ssize_t) <= sizeof(uint64_t));
     static_assert(sizeof(void *) <= sizeof(uint64_t));
     static_assert(_Alignof(void *) <= _Alignof(uint64_t));
-    if (N_words > PY_SSIZE_T_MAX / (maxrank + 1) || N > PY_SSIZE_T_MAX / 4) {
+    if (N_chunks > PY_SSIZE_T_MAX / (maxrank + 1) || N > PY_SSIZE_T_MAX / 4) {
         PyErr_SetString(PyExc_OverflowError, "Lattice was too big to construct");
         return NULL;
     }
-    Py_ssize_t num_words = 4*N + N_words*(maxrank + 1);
-    if (num_words < 0) {
+    Py_ssize_t num_chunks = 4*N + N_chunks*(maxrank + 1);
+    if (num_chunks < 0) {
         PyErr_SetString(PyExc_OverflowError, "Lattice was too big to construct");
         return NULL;
     }
-    LatticeMod2 *L = (LatticeMod2 *)PyType_GenericAlloc(&LatticeMod2_Type, num_words);
+    LatticeMod2 *L = (LatticeMod2 *)PyType_GenericAlloc(&LatticeMod2_Type, num_chunks);
     if (!L) {
         return NULL;
     }
@@ -2595,15 +2595,15 @@ LatticeMod2_new_impl(Py_ssize_t N, Py_ssize_t maxrank)
     Py_ssize_t *col_to_pivot = (Py_ssize_t *)&buffer[2*N];
     Py_ssize_t *row_to_pivot = (Py_ssize_t *)&buffer[3*N];
     uint64_t *data = (uint64_t *)&buffer[4*N];
-    assert(data[N_words*(maxrank+1)-1] == 0);
+    assert(data[N_chunks*(maxrank+1)-1] == 0);
     L->N = N;
-    L->N_words = N_words;
+    L->N_chunks = N_chunks;
     L->maxrank = maxrank;
     L->rank = 0;
     for (Py_ssize_t j = 0; j < N; j++) {
         col_to_pivot[j] = -1;
     }
-    memset(zero_columns_mask, -1, N_words*sizeof(uint64_t));
+    memset(zero_columns_mask, -1, N_chunks*sizeof(uint64_t));
     L->zero_columns_mask = zero_columns_mask;
     L->row_to_pivot = row_to_pivot;
     L->col_to_pivot = col_to_pivot;
@@ -2620,12 +2620,12 @@ LatticeMod2_copy(PyObject *self, PyObject *Py_UNUSED(ignored))
         return NULL;
     }
     L2->rank = L->rank;
-    memcpy(L2->zero_columns_mask, L->zero_columns_mask, L->N_words*sizeof(uint64_t));
+    memcpy(L2->zero_columns_mask, L->zero_columns_mask, L->N_chunks*sizeof(uint64_t));
     memcpy(L2->row_to_pivot, L->row_to_pivot, L->rank*sizeof(Py_ssize_t));
     memcpy(L2->col_to_pivot, L->col_to_pivot, L->N*sizeof(Py_ssize_t));
     for (Py_ssize_t i = 0; i < L->rank; i++) {
-        L2->basis[i] = L2->data + (i * L->N_words);
-        memcpy(L2->basis[i], L->basis[i], L->N_words*sizeof(uint64_t));
+        L2->basis[i] = L2->data + (i * L->N_chunks);
+        memcpy(L2->basis[i], L->basis[i], L->N_chunks*sizeof(uint64_t));
         assert(GETBIT(L2->basis[i], L2->row_to_pivot[i]) == 1);
     }
     return (PyObject *)L2;
@@ -2684,12 +2684,12 @@ Prime2_Lattice_full(PyObject *Py_UNUSED(p2), PyObject *arg)
     if (result == NULL) {
         return NULL;
     }
-    memset(result->zero_columns_mask, 0, result->N_words*sizeof(uint64_t));
-    Py_ssize_t N_words = result->N_words;
+    memset(result->zero_columns_mask, 0, result->N_chunks*sizeof(uint64_t));
+    Py_ssize_t N_chunks = result->N_chunks;
     for (Py_ssize_t i = 0; i < N; i++) {
         result->col_to_pivot[i] = i;
         result->row_to_pivot[i] = i;
-        uint64_t *row = &result->data[i*N_words];
+        uint64_t *row = &result->data[i*N_chunks];
         row[i / 64] = (uint64_t)1 << (i % 64);
         result->basis[i] = row;
     }
@@ -2703,7 +2703,7 @@ LatticeMod2_get_basis(PyObject *self, PyObject *Py_UNUSED(ignored))
     assert(Py_TYPE(self) == &LatticeMod2_Type);
     LatticeMod2 *L = (LatticeMod2 *)self;
     Py_ssize_t N = L->N;
-    Py_ssize_t N_words = L->N_words;
+    Py_ssize_t N_chunks = L->N_chunks;
     Py_ssize_t R = L->rank;
     PyObject *result = PyList_New(R);
     if (result == NULL) {
@@ -2715,7 +2715,7 @@ LatticeMod2_get_basis(PyObject *self, PyObject *Py_UNUSED(ignored))
             Py_DECREF(result);
             return NULL;
         }
-        memcpy(v->datawords, L->basis[i], N_words*sizeof(uint64_t));
+        memcpy(v->datawords, L->basis[i], N_chunks*sizeof(uint64_t));
         PyList_SET_ITEM(result, i, v);
     }
     return result;
@@ -2746,7 +2746,7 @@ LatticeMod2_tolist(PyObject *self, PyObject *Py_UNUSED(ignored))
 static void
 LatticeMod2_insert_vector_with_pivot(LatticeMod2 *L, uint64_t *vecwords, Py_ssize_t j)
 {
-    assert(vecwords == L->data + L->N_words * L->rank);
+    assert(vecwords == L->data + L->N_chunks * L->rank);
     Py_ssize_t R = L->rank;
     Py_ssize_t *row_to_pivot = L->row_to_pivot;
     Py_ssize_t *col_to_pivot = L->col_to_pivot;
@@ -2766,9 +2766,9 @@ LatticeMod2_insert_vector_with_pivot(LatticeMod2 *L, uint64_t *vecwords, Py_ssiz
     basis[where] = vecwords;
     row_to_pivot[where] = j;
     col_to_pivot[j] = where;
-    Py_ssize_t N_words = L->N_words;
+    Py_ssize_t N_chunks = L->N_chunks;
     uint64_t *zero_columns_mask = L->zero_columns_mask;
-    for (Py_ssize_t J = 0; J < N_words; J++) {
+    for (Py_ssize_t J = 0; J < N_chunks; J++) {
         zero_columns_mask[J] &= ~vecwords[J];
     }
 }
@@ -2777,15 +2777,15 @@ static bool
 LatticeMod2_add_vector_impl(LatticeMod2 *L, uint64_t *vecwords)
 {
     Py_ssize_t N = L->N;
-    Py_ssize_t N_words = L->N_words;
+    Py_ssize_t N_chunks = L->N_chunks;
     if (L->rank == N) {
         return false;
     }
     vecwords = LatticeMod2_push_vector(L, vecwords);
-    for (Py_ssize_t J = 0; J < N_words; J++) {
+    for (Py_ssize_t J = 0; J < N_chunks; J++) {
         uint64_t word = vecwords[J];
         Py_ssize_t *c2p = &L->col_to_pivot[J*64];
-        Py_ssize_t j_end = J < N_words - 1 ? 64 : N-64*J;
+        Py_ssize_t j_end = J < N_chunks - 1 ? 64 : N-64*J;
         for (Py_ssize_t j = 0; j < j_end; j++) {
             assert(((word>>j) & 1) == GETBIT(vecwords, J*64+j));
             if (((word >> j) & 1) == 0) {
@@ -2795,7 +2795,7 @@ LatticeMod2_add_vector_impl(LatticeMod2 *L, uint64_t *vecwords)
             if (i != -1) {
                 uint64_t *row = L->basis[i];
                 assert(GETBIT(row, J*64+j) == 1);
-                VectorMod2_iadd_impl(&vecwords[J], &row[J], N_words - J);
+                VectorMod2_iadd_impl(&vecwords[J], &row[J], N_chunks - J);
                 assert(GETBIT(vecwords, J*64+j) == 0);
                 word = vecwords[J];
                 continue;
@@ -2863,22 +2863,22 @@ static bool
 LatticeMod2_contains_impl(LatticeMod2 *L, uint64_t *vecwords)
 {
     Py_ssize_t N = L->N;
-    Py_ssize_t N_words = L->N_words;
+    Py_ssize_t N_chunks = L->N_chunks;
     if (L->rank == N) {
         return true;
     }
     uint64_t *zero_columns_mask = L->zero_columns_mask;
-    for (Py_ssize_t J = 0; J < N_words; J++) {
+    for (Py_ssize_t J = 0; J < N_chunks; J++) {
         if (vecwords[J] & zero_columns_mask[J]) {
             return false;
         }
     }
     vecwords = LatticeMod2_push_vector(L, vecwords);
     Py_ssize_t *col_to_pivot = L->col_to_pivot;
-    for (Py_ssize_t J = 0; J < N_words; J++) {
+    for (Py_ssize_t J = 0; J < N_chunks; J++) {
         uint64_t word = vecwords[J];
         Py_ssize_t *c2p = &col_to_pivot[J*64];
-        Py_ssize_t j_end = J < N_words - 1 ? 64 : N-64*J;
+        Py_ssize_t j_end = J < N_chunks - 1 ? 64 : N-64*J;
         for (Py_ssize_t j = 0; j < j_end; j++) {
             assert(((word>>j) & 1) == GETBIT(vecwords, J*64+j));
             if (((word >> j) & 1) == 0) {
@@ -2890,7 +2890,7 @@ LatticeMod2_contains_impl(LatticeMod2 *L, uint64_t *vecwords)
             }
             uint64_t *row = L->basis[i];
             assert(GETBIT(row, J*64+j) == 1);
-            VectorMod2_iadd_impl(&vecwords[J], &row[J], N_words - J);
+            VectorMod2_iadd_impl(&vecwords[J], &row[J], N_chunks - J);
             assert(GETBIT(vecwords, J*64+j) == 0);
             word = vecwords[J];
             continue;
@@ -2920,7 +2920,7 @@ static void
 LatticeMod2_reduce_impl(LatticeMod2 *L)
 {
     Py_ssize_t R = L->rank;
-    Py_ssize_t N_words = L->N_words;
+    Py_ssize_t N_chunks = L->N_chunks;
     for (Py_ssize_t i = 0; i < R; i++) {
         if (i && i % 100 == 0) {
             printf("reduced %lld/%lld rows.\n", (long long)i, (long long)R);
@@ -2934,7 +2934,7 @@ LatticeMod2_reduce_impl(LatticeMod2 *L)
                 assert(GETBIT(row, j) == 1);
                 assert(GETBIT(row2, j) == 1);
                 Py_ssize_t J = j/64;
-                VectorMod2_iadd_impl(&row[J], &row2[J], N_words - J);
+                VectorMod2_iadd_impl(&row[J], &row2[J], N_chunks - J);
                 assert(GETBIT(row, j) == 0);
                 assert(GETBIT(row2, j) == 1);
             }
@@ -3048,12 +3048,12 @@ LatticeMod2_decompose(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
     LatticeMod2 *L = (LatticeMod2 *)self;
     LatticeMod2_reduce_impl(L);
     Py_ssize_t N = L->N;
-    Py_ssize_t N_words = L->N_words;
+    Py_ssize_t N_chunks = L->N_chunks;
     // Implicit union/find data structure on the indexes
     Py_ssize_t *uf_parent = PyMem_Malloc(N * sizeof(Py_ssize_t));
     Py_ssize_t *uf_size = PyMem_Malloc(N * sizeof(Py_ssize_t));
     // Used later for partitioning. Avoid quadratic time.
-    uint64_t *scratch = PyMem_Malloc(N_words * sizeof(uint64_t));
+    uint64_t *scratch = PyMem_Malloc(N_chunks * sizeof(uint64_t));
     Py_ssize_t *root_to_component_index = PyMem_Malloc(N * sizeof(Py_ssize_t));
     Py_ssize_t *indexes_by_component = PyMem_Malloc(N * sizeof(Py_ssize_t));
     Py_ssize_t *component_to_size = NULL;
@@ -3158,9 +3158,9 @@ LatticeMod2_decompose(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
         Py_ssize_t k = root_to_component_index[uf_parent[L->row_to_pivot[i]]];
         Py_ssize_t start = component_to_indexes_start[k];
         Py_ssize_t sub_N = component_to_size[k];
-        Py_ssize_t sub_N_words = (sub_N + 63) / 64;
+        Py_ssize_t sub_N_chunks = (sub_N + 63) / 64;
         uint64_t *row = L->basis[i];
-        memset(scratch, 0, sub_N_words * sizeof(uint64_t));
+        memset(scratch, 0, sub_N_chunks * sizeof(uint64_t));
         for (Py_ssize_t w = 0; w < sub_N; w++) {
             Py_ssize_t j = indexes_by_component[start + w];
             scratch[w/64] |= GETBIT(row, j) << (w % 64);
@@ -3206,7 +3206,83 @@ error:
     return result;
 }
 
-// TODO: decompose, relations_among
+static PyObject *
+Prime2_relations_among(PyObject *Py_UNUSED(prime2_o), PyObject *arg)
+{
+    if (!PyList_CheckExact(arg)) {
+        PyErr_SetString(PyExc_TypeError, "relations_among(vecs) argument must be a list");
+        return NULL;
+    }
+    Py_ssize_t R = PyList_GET_SIZE(arg);
+    if (R == 0) {
+        return (PyObject *)LatticeMod2_new_impl(0, 0);
+    }
+    Py_ssize_t N = -1;
+    for (Py_ssize_t i = 0; i < R; i++) {
+        PyObject *vo = PyList_GET_ITEM(arg, i);
+        if (Py_TYPE(vo) != &VectorMod2_Type) {
+            PyErr_SetString(PyExc_TypeError, "relations_among(vecs) argument must be a list of Vectors");
+            return NULL;
+        }
+        VectorMod2 *v = (VectorMod2 *)vo;
+        if (i == 0) {
+            N = v->N;
+        } else {
+            if (v->N != N) {
+                PyErr_SetString(PyExc_ValueError, "length mismatch in relations_among");
+                return NULL;
+            }
+        }
+    }
+    Py_ssize_t N_chunks = ((size_t)N + 63) / 64;
+    Py_ssize_t R_chunks = ((size_t)R + 63) / 64;
+    Py_ssize_t NR_chunks = N_chunks + R_chunks;
+    if (NR_chunks > PY_SSIZE_T_MAX / 64) {
+        PyErr_SetNone(PyExc_OverflowError);
+        return NULL;
+    }
+    Py_ssize_t NR = NR_chunks * 64;
+    uint64_t *scratch = (uint64_t *)PyMem_Malloc(NR_chunks * sizeof(uint64_t));
+    if (scratch == NULL) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+    LatticeMod2 *L = LatticeMod2_new_impl(NR, R);
+    assert(L->N_chunks == NR_chunks);
+    if (L == NULL) {
+        PyMem_Free(scratch);
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < R; i++) {
+        if (i && i % 100 == 0) {
+            printf("kernel progress %lld/%lld\n", (long long)i, (long long)R);
+        }
+        VectorMod2 *v = (VectorMod2 *)PyList_GET_ITEM(arg, i);
+        memcpy(scratch, v->datawords, N_chunks*sizeof(uint64_t));
+        memset(scratch + N_chunks, 0, R_chunks*sizeof(uint64_t));
+        scratch[N_chunks + i/64] = (uint64_t)1 << (i % 64);
+        bool err = LatticeMod2_add_vector_impl(L, scratch);
+        assert(!err); (void)err;
+    }
+    assert(L->rank == R);
+    PyMem_Free(scratch);
+    Py_ssize_t cutoff_i = 0;
+    while (cutoff_i < R && L->row_to_pivot[cutoff_i] < N) {
+        cutoff_i++;
+    }
+    LatticeMod2 *result = LatticeMod2_new_impl(R, R-cutoff_i);
+    if (result == NULL) {
+        Py_DECREF(L);
+        return NULL;
+    }
+    for (Py_ssize_t i = cutoff_i; i < R; i++) {
+        assert(L->row_to_pivot[i] >= N);
+        bool err = LatticeMod2_add_vector_impl(result, L->basis[i] + N_chunks);
+        assert(!err); (void)err;
+    }
+    Py_DECREF(L);
+    return (PyObject *)result;
+}
 
 static PySequenceMethods LatticeMod2_as_sequence = {
     .sq_contains = LatticeMod2_contains
