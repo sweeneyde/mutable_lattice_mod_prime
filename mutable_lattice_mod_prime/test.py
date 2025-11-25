@@ -812,6 +812,34 @@ class Test_Lattice_u8(unittest.TestCase):
                                 with self.assertRaises(ValueError):
                                     L.coefficients_of(v)
 
+    def test_add(self):
+        pp = Prime_u8(5)
+        self.assertEqual(pp.Lattice(3) + pp.Lattice(3), pp.Lattice(3))
+        self.assertEqual(pp.Lattice(3, [[1, 0, 0]]) + pp.Lattice(3),
+                         pp.Lattice(3, [[1, 0, 0]]))
+        self.assertEqual(pp.Lattice(3, [[1, 0, 0]]) + pp.Lattice(3, [[1, 0, 0]]),
+                         pp.Lattice(3, [[1, 0, 0]]))
+        self.assertEqual(pp.Lattice(3, [[1, 0, 0]]) + pp.Lattice(3, [[1, 1, 1]]),
+                         pp.Lattice(3, [[1, 0, 0], [0, 1, 1]]))
+        self.assertEqual(pp.Lattice(3, [[1, 0, 0]]) + pp.Lattice(3, [[1, 1, 1]]),
+                         pp.Lattice(3, [[1, 0, 0], [0, 1, 1]]))
+        self.assertEqual(pp.Lattice(3, [[1, 0, 0], [0, 1, 0]]) + pp.Lattice(3, [[0, 1, 0], [0, 0, 1]]),
+                         pp.Lattice_full(3))
+
+    def test_iadd(self):
+        pp = Prime_u8(5)
+        L = pp.Lattice(5, [[1, 1, 1, 1, 1]])
+        L0 = L
+        L += pp.Lattice(5, [[0, 0, 0, 1, 1]])
+        self.assertIs(L, L0)
+        self.assertEqual(L, pp.Lattice(5, [[1, 1, 1, 1, 1], [0, 0, 0, 1, 1]]))
+        L += pp.Lattice(5, [[0, 1, 2, 0, 0]])
+        self.assertIs(L, L0)
+        self.assertEqual(L, pp.Lattice(5, [[1, 1, 1, 1, 1], [0, 1, 2, 0, 0], [0, 0, 0, 1, 1]]))
+        L += pp.Lattice_full(5)
+        self.assertIs(L, L0)
+        self.assertEqual(L, pp.Lattice_full(5))
+
 class Test_Mod2(unittest.TestCase):
     def test_construct_Prime2(self):
         Prime2()

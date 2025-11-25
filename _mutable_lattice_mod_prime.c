@@ -1976,8 +1976,83 @@ Prime_u8_relations_among(PyObject *prime_u8_o, PyObject *arg)
     return (PyObject *)result;
 }
 
+static bool
+Lattice_u8_inplace_add_impl(Lattice_u8 *L, Lattice_u8 *other)
+{
+    for (Py_ssize_t i = other->rank - 1; i >= 0; i--) {
+        if (Lattice_u8_add_vector_impl(L, other->basis[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static PyObject *
+Lattice_u8_inplace_add(PyObject *self, PyObject *other)
+{
+    assert(Py_TYPE(self) == &Lattice_u8_Type);
+    if (Py_TYPE(other) != &Lattice_u8_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    Lattice_u8 *L_self = (Lattice_u8 *)self;
+    Lattice_u8 *L_other = (Lattice_u8 *)other;
+    if (L_self->N != L_other->N) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in Lattice.__iadd__");
+        return NULL;
+    }
+    if (Lattice_u8_inplace_add_impl(L_self, L_other)) {
+        return NULL;
+    }
+    return Py_NewRef(self);
+}
+
+static PyObject *
+Lattice_u8_add(PyObject *self, PyObject *other)
+{
+    if (Py_TYPE(self) != &Lattice_u8_Type || Py_TYPE(other) != &Lattice_u8_Type) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    Lattice_u8 *L1 = (Lattice_u8 *)self;
+    Lattice_u8 *L2 = (Lattice_u8 *)other;
+    if (L1->N != L2->N) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in Lattice.__add__");
+        return NULL;
+    }
+    if (L1->prime_u8->p != L2->prime_u8->p) {
+        PyErr_SetString(PyExc_ValueError, "prime mismatch in Lattice.__add__");
+        return NULL;
+    }
+    if (L2->rank > L1->rank) {
+        Lattice_u8 *tmp = L1;
+        L1 = L2;
+        L2 = tmp;
+    }
+    Py_ssize_t maxrank = L1->rank + L2->rank;
+    if (maxrank < L1->maxrank) { maxrank = L1->maxrank; }
+    if (maxrank < L2->maxrank) { maxrank = L2->maxrank; }
+    if (maxrank > L1->N) { maxrank = L1->N; }
+    Lattice_u8 *result = Lattice_u8_new_impl(L1->prime_u8, L1->N, maxrank);
+    if (result == NULL) {
+        return NULL;
+    }
+    if (Lattice_u8_inplace_add_impl(result, L1)) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    if (Lattice_u8_inplace_add_impl(result, L2)) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    return (PyObject *)result;
+}
+
 static PySequenceMethods Lattice_u8_as_sequence = {
     .sq_contains = Lattice_u8_contains
+};
+
+static PyNumberMethods Lattice_u8_as_number = {
+    .nb_add = Lattice_u8_add,
+    .nb_inplace_add = Lattice_u8_inplace_add,
 };
 
 static PyMethodDef Lattice_u8_methods[] = {
@@ -2019,6 +2094,7 @@ static PyTypeObject Lattice_u8_Type = {
     .tp_methods = Lattice_u8_methods,
     .tp_members = Lattice_u8_members,
     .tp_as_sequence = &Lattice_u8_as_sequence,
+    .tp_as_number = &Lattice_u8_as_number,
     .tp_richcompare = Lattice_u8_richcompare,
     .tp_repr = Lattice_u8_repr,
     .tp_str = Lattice_u8_str,
