@@ -487,6 +487,16 @@ class Test_Lattice_u8(unittest.TestCase):
         self.assertEqual(L.tolist(), [[1, 2, 3], [0, 1, 2]])
         self.assertEqual(L2.tolist(), [[1, 2, 3], [0, 1, 2], [0, 0, 1]])
 
+    def test_clear(self):
+        pp = Prime_u8(7)
+        for N in [0, 1, 2, 3, 4, 5]:
+            basis = [pp.Vector([0]*i + [1] * (N-i)) for i in range(N)]
+            L = pp.Lattice(N, basis)
+            self.assertIsNone(L.clear())
+            self.assertEqual(L.get_basis(), [])
+            for v in basis:
+                L.add_vector(v) # make sure we can still add vectors
+
     def test_reduce(self):
         # reduced row echelon form
         pp = Prime_u8(7)
@@ -526,6 +536,12 @@ class Test_Lattice_u8(unittest.TestCase):
                     self.assertIn(3*vec, mod)
                     self.assertIn(vec0 + vec, mod)
                     self.assertIn(3*vec0-4*vec, mod)
+
+                if random.randrange(2):
+                    copy = mod.copy()
+                    mod.clear()
+                    for v in copy.get_basis():
+                        mod.add_vector(v)
 
                 copy = mod.copy()
                 copy.reduce()
@@ -1010,6 +1026,16 @@ class TestLatticeMod2(unittest.TestCase):
         self.assertEqual(repr(pp.Lattice(2, [[1, 1]])), "Prime(2).Lattice(2, [[1, 1]])")
         self.assertEqual(repr(pp.Lattice(2, [[1, 1], [0, 1]])), "Prime(2).Lattice(2, [[1, 1], [0, 1]])")
 
+    def test_clear(self):
+        pp = Prime2()
+        for N in [0, 1, 2, 10, 64, 65, 128, 129]:
+            basis = [pp.Vector([0]*i + [1] * (N-i)) for i in range(N)]
+            L = pp.Lattice(N, basis)
+            self.assertIsNone(L.clear())
+            self.assertEqual(L.get_basis(), [])
+            for v in basis:
+                L.add_vector(v) # make sure we can still add vectors
+
     def test_random(self):
         random.seed(123)
         pp = Prime2()
@@ -1029,6 +1055,12 @@ class TestLatticeMod2(unittest.TestCase):
                     self.assertIn(3*vec, mod)
                     self.assertIn(vec0 + vec, mod)
                     self.assertIn(3*vec0-4*vec, mod)
+
+                if random.randrange(2):
+                    copy = mod.copy()
+                    mod.clear()
+                    for v in copy.get_basis():
+                        mod.add_vector(v)
 
                 copy = mod.copy()
                 copy.reduce()

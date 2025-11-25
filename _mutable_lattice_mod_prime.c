@@ -1091,6 +1091,19 @@ Prime_u8_Lattice_full(PyObject *prime_u8, PyObject *arg)
     return (PyObject *)result;
 }
 
+static PyObject *
+Lattice_u8_clear(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    assert(Py_TYPE(self) == &Lattice_u8_Type);
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    L->num_zero_columns = L->N;
+    for (Py_ssize_t i = 0; i < L->N; i++) {
+        L->zero_columns[i] = i;
+        L->col_to_pivot[i] = -1;
+    }
+    L->rank = 0;
+    Py_RETURN_NONE;
+}
 
 static PyObject *
 Lattice_u8_get_basis(PyObject *self, PyObject *Py_UNUSED(ignored))
@@ -1841,6 +1854,7 @@ static PySequenceMethods Lattice_u8_as_sequence = {
 
 static PyMethodDef Lattice_u8_methods[] = {
     {"copy", Lattice_u8_copy, METH_NOARGS, "return a new copy of this Lattice"},
+    {"clear", Lattice_u8_clear, METH_NOARGS, "replace this Lattice with the zero lattice of the same ambient dimension"},
     {"tolist", Lattice_u8_tolist, METH_NOARGS, "return a list of lists representing a basis for this space"},
     {"get_basis", Lattice_u8_get_basis, METH_NOARGS, "return a list of basis Vectors for this space"},
     {"add_vector", Lattice_u8_add_vector, METH_O, "add another Vector to this lattice"},
@@ -2422,7 +2436,9 @@ VectorMod2_shuffled_by_action(PyObject *self, PyObject *const *args, Py_ssize_t 
             return NULL;
         }
         uint64_t bit = (vec->datawords[j / 64] >> (j % 64)) & 1;
-        result->datawords[aj / 64] ^= bit << (aj % 64);
+        if (bit) {
+            result->datawords[aj / 64] ^= bit << (aj % 64);
+        }
     }
     PyBuffer_Release(&buf);
     return (PyObject *)result;
@@ -2629,6 +2645,18 @@ LatticeMod2_copy(PyObject *self, PyObject *Py_UNUSED(ignored))
         assert(GETBIT(L2->basis[i], L2->row_to_pivot[i]) == 1);
     }
     return (PyObject *)L2;
+}
+
+static PyObject *
+LatticeMod2_clear(PyObject *self, PyObject *Py_UNUSED(ignored))
+{
+    LatticeMod2 *L = (LatticeMod2 *)self;
+    L->rank = 0;
+    memset(L->zero_columns_mask, -1, L->N_chunks*sizeof(uint64_t));
+    for (Py_ssize_t j = 0; j < L->N; j++) {
+        L->col_to_pivot[j] = -1;
+    }
+    Py_RETURN_NONE;
 }
 
 static bool
@@ -2922,7 +2950,7 @@ LatticeMod2_reduce_impl(LatticeMod2 *L)
     Py_ssize_t R = L->rank;
     Py_ssize_t N_chunks = L->N_chunks;
     for (Py_ssize_t i = 0; i < R; i++) {
-        if (i && i % 100 == 0) {
+        if (i && i % 1000 == 0) {
             printf("reduced %lld/%lld rows.\n", (long long)i, (long long)R);
         }
         uint64_t *row = L->basis[i];
@@ -3254,7 +3282,7 @@ Prime2_relations_among(PyObject *Py_UNUSED(prime2_o), PyObject *arg)
         return NULL;
     }
     for (Py_ssize_t i = 0; i < R; i++) {
-        if (i && i % 100 == 0) {
+        if (i && i % 1000 == 0) {
             printf("kernel progress %lld/%lld\n", (long long)i, (long long)R);
         }
         VectorMod2 *v = (VectorMod2 *)PyList_GET_ITEM(arg, i);
@@ -3298,6 +3326,8 @@ static PyMethodDef LatticeMod2_methods[] = {
      "L.decompose(keep_together=[], /) returns a pair ([indexes1, ..., indexesk], [L1, ..., Lk]) that decomposes L into a direct sum of smaller lattices. "
      "Each lattice Li is the projection of L onto the indexes in indexesi. "
      "Any sequence of integers provided in as an entry of keep_together will be put into the same direct summand. "},
+    {"clear", LatticeMod2_clear, METH_NOARGS,
+     "L.clear() replaces the Lattice with the zero Lattice in the same ambient dimension"},
     {NULL, NULL, 0, NULL}
 };
 
