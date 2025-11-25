@@ -78,6 +78,14 @@ submod_u8(uint8_t a, uint8_t b, uint8_t mod)
 }
 
 static inline uint8_t
+add_multiple_u8(uint8_t a, uint8_t scalar, uint8_t b, uint8_t mod)
+{
+    assert(b < mod);
+    return (uint8_t) (((int)a + (int)scalar * (int)b) % (int)mod);
+}
+
+
+static inline uint8_t
 subtract_multiple_u8(uint8_t a, uint8_t scalar, uint8_t b, uint8_t mod)
 {
     assert(b < mod);
@@ -549,6 +557,14 @@ VectorModPrime_u8_subtract_multiple_impl(uint8_t *dest, uint8_t *src, Py_ssize_t
     }
 }
 
+static void
+VectorModPrime_u8_add_multiple_impl(uint8_t *dest, uint8_t *src, Py_ssize_t N, uint8_t scalar, uint8_t p)
+{
+    for (Py_ssize_t j = 0; j < N; j++) {
+        dest[j] = add_multiple_u8(dest[j], scalar, src[j], p);
+    }
+}
+
 static PyObject *
 VectorModPrime_u8_add(PyObject *a, PyObject *b)
 {
@@ -721,6 +737,38 @@ VectorModPrime_u8_subtract_multiple(PyObject *self, PyObject *const *args, Py_ss
 }
 
 static PyObject *
+VectorModPrime_u8_add_multiple(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    assert(Py_TYPE(self) == &VectorModPrime_u8_Type);
+    VectorModPrime_u8 *vec = (VectorModPrime_u8 *)self;
+    uint8_t p = vec->p;
+    if (nargs != 2) {
+        PyErr_SetString(PyExc_TypeError, "add_multiple takes 2 arguments");
+        return NULL;
+    }
+    uint8_t scalar;
+    if (object_to_u8_mod_prime(args[0], p, &scalar)) {
+        return NULL;
+    }
+    if (Py_TYPE(args[1]) != &VectorModPrime_u8_Type) {
+        PyErr_SetString(PyExc_TypeError, "add_multiple second argument must be VectorModPrime_u8");
+        return NULL;
+    }
+    VectorModPrime_u8 *other = (VectorModPrime_u8 *)args[1];
+    if (other->p != p) {
+        PyErr_SetString(PyExc_ValueError, "prime mismatch in add_multiple");
+        return NULL;
+    }
+    if (Py_SIZE(other) != Py_SIZE(vec)) {
+        PyErr_SetString(PyExc_ValueError, "length mismatch in add_multiple");
+        return NULL;
+    }
+    VectorModPrime_u8_add_multiple_impl(vec->data, other->data, Py_SIZE(vec), scalar, p);
+    Py_RETURN_NONE;
+}
+
+
+static PyObject *
 VectorModPrime_u8_repr(PyObject *self)
 {
     PyObject *tolist = VectorModPrime_u8_tolist(self, NULL);
@@ -883,6 +931,8 @@ static PyMethodDef VectorModPrime_u8_methods[] = {
     {"tolist", VectorModPrime_u8_tolist, METH_NOARGS, "v.tolist() returns the list of int representing v"},
     {"subtract_multiple", (PyCFunction)(void(*)(void))VectorModPrime_u8_subtract_multiple,
         METH_FASTCALL, "v.subtract_multiple(t, w) does v -= t*w"},
+    {"add_multiple", (PyCFunction)(void(*)(void))VectorModPrime_u8_add_multiple,
+        METH_FASTCALL, "v.add_multiple(t, w) does v -= t*w"},
     {"shuffled_by_action", (PyCFunction)(void(*)(void))VectorModPrime_u8_shuffled_by_action,
         METH_FASTCALL, "v.shuffled_by_action(a) does for each i: result[a[i]] += v[i]"},
     {"copy", VectorModPrime_u8_copy, METH_NOARGS, "v.copy() makes a new copy of the Vector v"},
@@ -1360,6 +1410,84 @@ Lattice_u8_contains(PyObject *self, PyObject *other)
         return -1;
     }
     return Lattice_u8_contains_impl((Lattice_u8 *)self, ((VectorModPrime_u8 *)other)->data);
+}
+
+static PyObject *
+Lattice_u8_coefficients_of(PyObject *self, PyObject *other)
+{
+    if (Py_TYPE(other) != &VectorModPrime_u8_Type) {
+        PyErr_SetString(PyExc_TypeError, "L.coefficients_of(v) argument must be Vector");
+        return NULL;
+    }
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    VectorModPrime_u8 *v = (VectorModPrime_u8 *)other;
+    Py_ssize_t N = L->N, R = L->rank;
+    if (Py_SIZE(v) != L->N) {
+        PyErr_SetString(PyExc_ValueError, "L.coefficients_of(v) argument length mismatch");
+        return NULL;
+    }
+    if (L->prime_u8->p != v->p) {
+        PyErr_SetString(PyExc_ValueError, "L.coefficients_of(v) prime mismatch");
+        return NULL;
+    }
+    VectorModPrime_u8 *result = VectorModPrime_u8_zero_impl(v->p, R);
+    if (result == NULL) {
+        return NULL;
+    }
+    uint8_t *result_vec = result->data;
+    uint8_t *vec = Lattice_u8_push_vector(L, v->data);
+    Py_ssize_t *col_to_pivot = L->col_to_pivot;
+    uint8_t p = L->prime_u8->p;
+    for (Py_ssize_t j = 0; j < N; j++) {
+        if (vec[j] == 0) {
+            continue;
+        }
+        Py_ssize_t i = col_to_pivot[j];
+        if (i == -1) {
+            PyErr_SetString(PyExc_ValueError, "Vector not present in Lattice");
+            Py_DECREF(result);
+            return NULL;
+        }
+        uint8_t *row = L->basis[i];
+        assert(row[j] == 1);
+        result_vec[i] = vec[j];
+        VectorModPrime_u8_subtract_multiple_impl(&vec[j], &row[j], N - j, vec[j], p);
+        assert(vec[j] == 0);
+    }
+    return (PyObject *)result;
+}
+
+static PyObject *
+Lattice_u8_linear_combination(PyObject *self, PyObject *other)
+{
+    Lattice_u8 *L = (Lattice_u8 *)self;
+    Py_ssize_t N = L->N, R = L->rank;
+    if (Py_TYPE(other) != &VectorModPrime_u8_Type) {
+        PyErr_SetString(PyExc_TypeError, "L.linear_combination(w) argument must be Vector");
+        return NULL;
+    }
+    VectorModPrime_u8 *w = (VectorModPrime_u8 *)other;
+    if (Py_SIZE(w) != R) {
+        PyErr_SetString(PyExc_ValueError, "L.linear_combination(w) argument must have length L.rank");
+        return NULL;
+    }
+    if (w->p != L->prime_u8->p) {
+        PyErr_SetString(PyExc_ValueError, "L.linear_combination(w) prime mismatch");
+        return NULL;
+    }
+    uint8_t *coefficients = w->data;
+    uint8_t p = w->p;
+    VectorModPrime_u8 *result = VectorModPrime_u8_zero_impl(w->p, N);
+    for (Py_ssize_t i = 0; i < R; i++) {
+        uint8_t c = coefficients[i];
+        if (c == 0) {
+            continue;
+        }
+        Py_ssize_t j = L->row_to_pivot[i];
+        uint8_t *row = L->basis[i];
+        VectorModPrime_u8_add_multiple_impl(&result->data[j], &row[j], N - j, c, p);
+    }
+    return (PyObject *)result;
 }
 
 static void
@@ -1863,6 +1991,10 @@ static PyMethodDef Lattice_u8_methods[] = {
      "L.decompose(keep_together=[], /) returns a pair ([indexes1, ..., indexesk], [L1, ..., Lk]) that decomposes L into a direct sum of smaller lattices. "
      "Each lattice Li is the projection of L onto the indexes in indexesi. "
      "Any sequence of integers provided in as an entry of keep_together will be put into the same direct summand. "},
+    {"coefficients_of", Lattice_u8_coefficients_of, METH_O,
+     "L.coefficients_of(v) returns the vector of coefficients needed to write L as a linear combination of basis vectors of L"},
+    {"linear_combination", Lattice_u8_linear_combination, METH_O,
+     "L.linear_combination(w) returns the linear combination of the basis vectors of L with coefficients given by w."},
     {NULL, NULL, 0, NULL}
 };
 

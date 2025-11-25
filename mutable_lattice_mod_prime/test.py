@@ -247,11 +247,18 @@ class Test_VectorModPrime_u8(unittest.TestCase):
         pp = Prime_u8(251)
         self.assertEqual(-pp.Vector([0, 1, 2, 3, 248, 249, 250]), pp.Vector([0, 250, 249, 248, 3, 2, 1]))
 
+    def test_VectorModPrime_u8_add_multiple(self):
+        pp = Prime_u8(251)
+        v = pp.Vector([0, 10, 20, 30])
+        v.add_multiple(5, pp.Vector([1, 2, 3, 4]))
+        self.assertEqual(v, pp.Vector([5, 20, 35, 50]))
+
     def test_VectorModPrime_u8_subtract_multiple(self):
         pp = Prime_u8(251)
         v = pp.Vector([0, 10, 20, 30])
         v.subtract_multiple(5, pp.Vector([1, 2, 3, 4]))
         self.assertEqual(v, pp.Vector([246, 0, 5, 10]))
+
 
     def test_VectorModPrime_u8_repr(self):
         self.assertEqual(
@@ -490,8 +497,8 @@ class Test_Lattice_u8(unittest.TestCase):
     def test_clear(self):
         pp = Prime_u8(7)
         for N in [0, 1, 2, 3, 4, 5]:
-            basis = [pp.Vector([0]*i + [1] * (N-i)) for i in range(N)]
-            L = pp.Lattice(N, basis)
+            L = pp.Lattice_full(N)
+            basis = L.get_basis()
             self.assertIsNone(L.clear())
             self.assertEqual(L.get_basis(), [])
             for v in basis:
@@ -764,6 +771,46 @@ class Test_Lattice_u8(unittest.TestCase):
                                 v += coeff * vec
                             self.assertEqual(v, zero)
 
+    def test_coefficients_of(self):
+        pp = Prime_u8(5)
+        L = pp.Lattice(3, [[1, 1, 2], [0, 1, 2]])
+        self.assertEqual(L.coefficients_of(pp.Vector([1, 1, 2])), pp.Vector([1, 0]))
+        self.assertEqual(L.coefficients_of(pp.Vector([0, 1, 2])), pp.Vector([0, 1]))
+        self.assertEqual(L.coefficients_of(pp.Vector([1, 2, 4])), pp.Vector([1, 1]))
+        self.assertEqual(L.coefficients_of(pp.Vector([2, 4, 3])), pp.Vector([2, 2]))
+        self.assertEqual(L.coefficients_of(pp.Vector([1, 0, 0])), pp.Vector([1, 4]))
+
+    def test_linear_combination(self):
+        pp = Prime_u8(5)
+        L = pp.Lattice(3, [[1, 1, 2], [0, 1, 2]])
+        self.assertEqual(L.linear_combination(pp.Vector([1, 0])), pp.Vector([1, 1, 2]))
+        self.assertEqual(L.linear_combination(pp.Vector([0, 1])), pp.Vector([0, 1, 2]))
+        self.assertEqual(L.linear_combination(pp.Vector([1, 1])), pp.Vector([1, 2, 4]))
+        self.assertEqual(L.linear_combination(pp.Vector([2, 2])), pp.Vector([2, 4, 3]))
+        self.assertEqual(L.linear_combination(pp.Vector([1, 4])), pp.Vector([1, 0, 0]))
+
+    def test_coefficients_of_random(self):
+        for p in (2, 3, 5):
+            pp = Prime_u8(p)
+            for N in range(10):
+                for R in range(10):
+                    for _ in range(5):
+                        L = pp.Lattice(N, maxrank=R)
+                        for _ in range(R):
+                            L.add_vector(pp.Vector(random.choices(range(p), k=N)))
+                        for _ in range(5):
+                            w = pp.Vector(random.choices(range(p), k=L.rank))
+                            v = L.linear_combination(w)
+                            self.assertIn(v, L)
+                            self.assertEqual(L.coefficients_of(v), w)
+                        for _ in range(5):
+                            v = pp.Vector(random.choices(range(p), k=N))
+                            if v in L:
+                                w = L.coefficients_of(v)
+                                self.assertEqual(L.linear_combination(w), v)
+                            else:
+                                with self.assertRaises(ValueError):
+                                    L.coefficients_of(v)
 
 class Test_Mod2(unittest.TestCase):
     def test_construct_Prime2(self):
@@ -1029,8 +1076,8 @@ class TestLatticeMod2(unittest.TestCase):
     def test_clear(self):
         pp = Prime2()
         for N in [0, 1, 2, 10, 64, 65, 128, 129]:
-            basis = [pp.Vector([0]*i + [1] * (N-i)) for i in range(N)]
-            L = pp.Lattice(N, basis)
+            L = pp.Lattice_full(N)
+            basis = L.get_basis()
             self.assertIsNone(L.clear())
             self.assertEqual(L.get_basis(), [])
             for v in basis:
